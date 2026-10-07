@@ -1,0 +1,64 @@
+services:
+  db:
+    image: postgres:17.6-alpine
+    environment:
+      POSTGRES_DB: dodo
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: local_database_only
+    volumes:
+      - database:/var/lib/postgresql/data
+      - ./docker/init.sql:/docker-entrypoint-initdb.d/roles.sql:ro
+    healthcheck:
+      test: [CMD-SHELL, "pg_isready -U postgres -d dodo"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+  migrate:
+    build: {context: ., target: app}
+    environment:
+      DATABASE_URL: jdbc:postgresql://db:5432/dodo
+      DATABASE_USER: postgres
+      DATABASE_PASSWORD: local_database_only
+      MIGRATE: "true"
+      WORKERS_ENABLED: "false"
+      DEMO_SEED: "false"
+      SPRING_PROFILES_ACTIVE: migrate
+      SPRING_MAIN_WEB_APPLICATION_TYPE: none
+    depends_on:
+      db: {condition: service_healthy}
+  app:
+    build: {context: ., target: app}
+    ports: ["127.0.0.1:8080:8080"]
+    environment:
+      DATABASE_URL: jdbc:postgresql://db:5432/dodo
+      PSP_URL: http://mock-psp:8081
+      WEBHOOK_URL: http://demo-receiver:8090/webhooks
+      ENCRYPTION_KEY: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
+    depends_on:
+      migrate: {condition: service_completed_successfully}
+      mock-psp: {condition: service_started}
+    restart: unless-stopped
+  mock-psp:
+    build: {context: ., target: mock-psp}
+    environment:
+      DATABASE_URL: jdbc:postgresql://db:5432/dodo
+    depends_on:
+      migrate: {condition: service_completed_successfully}
+    restart: unless-stopped
+  frontend:
+    profiles: [ui]
+    build: ./frontend
+    ports: ["127.0.0.1:3000:80"]
+    depends_on: [app]
+  demo-receiver:
+    profiles: [demo]
+    image: python:3.12-alpine
+    working_dir: /demo
+    command: [python, receiver.py]
+    volumes:
+      - ./demo:/demo:ro
+      - receiver-data:/data
+    ports: ["127.0.0.1:8090:8090"]
+volumes:
+  database:
+  receiver-data:

@@ -1,0 +1,35 @@
+server:
+  port: ${PORT:8080}
+spring:
+  datasource:
+    url: ${DATABASE_URL:jdbc:postgresql://localhost:5432/dodo}
+    username: ${DATABASE_USER:app_user}
+    password: ${DATABASE_PASSWORD:local_app_only}
+    hikari:
+      maximum-pool-size: 10
+  flyway:
+    enabled: ${MIGRATE:false}
+  jackson:
+    property-naming-strategy: SNAKE_CASE
+    deserialization:
+      fail-on-unknown-properties: true
+      accept-float-as-int: false
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health
+  endpoint:
+    health:
+      show-details: never
+app:
+  psp-url: ${PSP_URL:http://mock-psp:8081}
+  webhook-url: ${WEBHOOK_URL:http://demo-receiver:8090/webhooks}
+  encryption-key: ${ENCRYPTION_KEY:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=}
+  demo-seed: ${DEMO_SEED:true}
+  workers-enabled: ${WORKERS_ENABLED:true}
+  psp-timeout-ms: ${PSP_TIMEOUT_MS:5000}
+  payment-lease-seconds: ${PAYMENT_LEASE_SECONDS:60}
+  payment-recovery-seconds: ${PAYMENT_RECOVERY_SECONDS:600}
+  payment-retry-delays: ${PAYMENT_RETRY_DELAYS:5,10,20,40,60,120}
+  webhook-retry-delays: ${WEBHOOK_RETRY_DELAYS:5,30,120,600,1800}
