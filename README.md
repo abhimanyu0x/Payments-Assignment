@@ -1,358 +1,351 @@
 # Invoice and Payment Service
 
-A Java 21 / Spring Boot modular monolith on PostgreSQL, with a separate mock payment processor (PSP), signed and retried webhooks, and a small signature-verifying webhook receiver.
+Create customers and invoices, try mock payments and see the resulting webhooks. The project includes a backend, PostgreSQL database, mock payment processor, webhook receiver and optional web interface.
 
-- `DESIGN.md` — the design document: data model, state machines, failure modes, webhooks, API keys, cuts, production gaps, scaling plan.
-- `openapi.yaml` — API contract, **generated from the code** (see [API documentation](#api-documentation)); do not edit it by hand.
-- `AI_USAGE.md` — how AI tools were used.
-- `VERIFICATION.md` — exactly what was executed and the results.
-- `DECISION_LOG.md`, `docs/MOCK_PSP.md`, `docs/VIDEO_GUIDE.md` — supporting notes.
+## Tech stack
 
-**Language:** Rust was preferred by the brief; Java/Spring Boot was chosen because the author knows it well and can own and explain the code.
+These are the versions declared in the project files and Docker images. Image tags such as Java 21 and Node 22 do not pin a patch version.
 
-## Run
+| Component | Version | Used for |
+|---|---|---|
+| Java | 21 | Backend, mock processor and webhook receiver |
+| Spring Boot | 3.5.7 | Java application framework |
+| PostgreSQL | 18.6 Alpine | Database |
+| Maven | 3.9.9 | Java builds and tests |
+| Spring Data JPA and Hibernate | Managed by Spring Boot 3.5.7 | Database access |
+| QueryDSL OpenFeign | 6.12 | Worker claims and queries |
+| Liquibase | Managed by Spring Boot 3.5.7 | Database migrations |
+| springdoc OpenAPI | 2.8.17 | API documentation |
+| Testcontainers | 1.21.4 | PostgreSQL integration tests |
+| React | 19.1.1 | Web interface |
+| TypeScript | 5.9.3 | Frontend code |
+| Vite | 6.4.1 | Frontend build |
+| Node.js | 22 Alpine | Frontend build container |
+| nginx | 1.27 Alpine | Serves the frontend and forwards API requests |
+| Docker Compose | v2 required | Starts the complete application |
 
-Requires Docker with Compose v2. From the repository root:
+## Start the complete application
+
+### 1. Prepare your computer
+
+Install Docker with Compose v2. On macOS or Windows, open Docker Desktop and wait until its engine is running. On Linux, make sure the Docker daemon is running and your user can access it.
+
+Extract the project ZIP. Open a terminal in the extracted folder that contains `docker-compose.yml`, `pom.xml` and this README.
+
+Check that Docker is available
 
 ```sh
-docker compose up
+docker info
+docker compose version
 ```
 
-This builds the three Java services (app, mock PSP, webhook receiver) and starts PostgreSQL 18. A one-shot `migrate` container applies the Liquibase changelogs, then the mock PSP, the app and the demo webhook receiver start. No local JDK, Maven, Node or `.env` file is needed. The first build downloads dependencies and takes a few minutes. The app is ready when `docker compose ps` shows it `healthy` (or use `docker compose up -d --wait`).
+You do not need to install Java, Maven, Node or PostgreSQL on your computer. Docker builds and runs them. No manual database setup or `.env` file is needed for the demo.
 
-| Service | URL (localhost only) |
-|---|---|
-| API | http://localhost:8080/api/v1 (health: `/actuator/health`) |
-| Webhook receiver | http://localhost:8090/events (verified events), `docker compose logs -f demo-receiver` |
-| PostgreSQL | `localhost:5432`, database `dodo` (for IntelliJ or psql; local demo credentials) |
-| API docs (Swagger UI) | http://localhost:8080/swagger-ui.html, raw spec at `/v3/api-docs.yaml` |
-| Optional UI | http://localhost:3000 (start with `docker compose --profile ui up`) |
-
-The mock PSP is not published to the host. All published ports bind to `127.0.0.1` only. Change them with `APP_PORT`, `RECEIVER_PORT`, `UI_PORT` and `DB_PORT`.
-
-Seeded local-only values. They exist only in demo mode: Compose sets `DEMO_MODE=true` and runs migrations with `LIQUIBASE_CONTEXTS=demo`. Outside demo mode neither the demo business nor its key is created (from `db/changelog/data/insert_demo_business.xml`, context `demo`, and `DemoEndpoint.java`):
-
-- Business `01a11810-ce4f-76f3-9863-cbf7566684b5`, API key `demo.local-demo-secret-change-for-real-use`
-- Webhook endpoint `http://demo-receiver:8090/webhooks`, signed with `DEMO_WEBHOOK_SECRET` from `docker-compose.yml` (the receiver gets the same value as `WEBHOOK_SECRET`)
-
-`docker compose down` stops everything and keeps data. `docker compose down -v` also **deletes** the database volume, including the receiver's stored events.
-
-## Database and migrations
-
-- **Engine:** PostgreSQL 18.6.
-- **IDs:** every primary key defaults to PostgreSQL's built-in `uuidv7()`, so IDs sort by creation time. Entities use `@GeneratedValue(strategy = IDENTITY)`, so Hibernate leaves the ID out of the insert and reads the database value back. Trace IDs are never stored, so the shared `platform` module generates them in Java (`UuidV7`), also as v7. See "Tracing and logs" below.
-- **Data access:** **Spring Data JPA** repositories (`JpaRepository` interfaces). Simple reads are derived query methods such as `findByBusinessIdAndId`; row locks are `@Lock(PESSIMISTIC_WRITE)` methods. Queries Spring Data cannot derive (worker claims and guarded bulk updates) use **QueryDSL** in a repository fragment (`PaymentAttemptClaimsImpl`, `WebhookDeliveryClaimsImpl`). There are no SQL strings and no `JdbcTemplate` anywhere. Q-classes are generated at compile time by the QueryDSL annotation processor (OpenFeign fork 6.12, app module only) into `target/`, so none are committed.
-- **Entities:** Lombok `@Getter @Builder` with a protected no-args constructor for JPA. There are no setters; state changes go through named methods such as `markPaid`, `claim` and `defer`. `created_at` and `updated_at` are filled by Spring Data JPA auditing (`@CreatedDate`, `@LastModifiedDate`) from one injected `Clock` (UTC, microsecond ticks to match PostgreSQL). Entities whose ID is assigned by the caller (mock PSP operations, received webhooks) implement `Persistable`, so saving them is one `INSERT` with no extra `SELECT`.
-
-| Module | Repositories |
-|---|---|
-| identity | `ApiKeyRepository` (tests add `BusinessRepository` for a second tenant) |
-| customers | `CustomerRepository` |
-| billing | `InvoiceRepository`, `InvoiceItemRepository` |
-| payments | `PaymentAttemptRepository` (+ `PaymentAttemptClaims` QueryDSL fragment) |
-| notifications | `WebhookEndpointRepository`, `EventRepository`, `WebhookDeliveryRepository` (+ `WebhookDeliveryClaims` fragment) |
-| mock PSP | `OperationRepository` (Spring Data only) |
-| receiver | `ReceivedEventRepository` (Spring Data only) |
-
-- **Locking:** row locks use JPA `PESSIMISTIC_WRITE`. Worker claims add the lock-timeout hint for `SKIP LOCKED` (a QueryDSL hint in the app, `@QueryHints` in the mock PSP), so Hibernate generates `… FOR NO KEY UPDATE SKIP LOCKED`. Conditional updates (claim-version guards, the call counter, exhaustion sweeps) are QueryDSL `update` clauses.
-- **Startup validation:** Hibernate runs `ddl-auto: validate`, so every entity is checked against the Liquibase schema at startup.
-- **Lists:** keyset pagination uses Spring Data's scroll API (`QuerydslPredicateExecutor.findBy(...).scroll(...)`, returning a `Window`). The shared `Pages` helper only signs the cursor to the business and the list, so a cursor cannot be reused for another tenant or list. Page size is a validated `PageQuery` record (`limit` 1 to 100, default 20).
-- **Derived values:** the replayed 202 is rebuilt from the attempt row, since it is always the same. The webhook body (`id`, `type`, `created_at`, `data`) is rebuilt deterministically from the stored event, so no row has to store its own ID.
-- **Bootstrap:** `docker/init.sql` creates the roles, the seven schemas and their default privileges. PostgreSQL runs it once, on a new volume. Liquibase open source has no schema or grant change type, so these live here, and any table created later is granted to the right role automatically. The test containers copy this same file into PostgreSQL's init folder, so there is one bootstrap script.
-- **Schema changes:** **Liquibase** XML, one file per table, under `app/src/main/resources/db/changelog/<schema>/`. Files are named for what they do: `create_table_<table>.xml` (for example `billing/create_table_invoices.xml`), and the seed is `data/insert_demo_business.xml`.
-
-How migrations are picked up and run:
-
-1. The `migrate` container starts the app with `MIGRATE=true`.
-2. `spring.liquibase.change-log` in `application.yml` points to **`db/changelog/db.changelog-master.xml`**.
-3. That master file `include`s each table file in order, from `identity/create_table_businesses.xml` to `data/insert_demo_business.xml`.
-4. Liquibase runs every changeset not yet listed in the `DATABASECHANGELOG` table, then records it there.
-
-The tests run the same master file against their own container.
-
-- **Changeset format:** every changeset has `author="Abhimanyu"` and an `id` that is its creation timestamp to the millisecond (`yyyyMMddHHmmssSSS`, e.g. `20261008074530385`).
-- **Native XML:** tables, keys, unique constraints, foreign keys and indexes use native change types (`createTable`, `addUniqueConstraint`, `addForeignKeyConstraint`, `createIndex`, `insert`), so Liquibase generates their rollbacks.
-- **Partial indexes:** for example "one unresolved payment per invoice". These are `createIndex` with a `modifySql` that appends the `WHERE` condition.
-- **CHECK constraints:** each table's CHECK rules are appended to its `createTable` by a `modifySql` `regExpReplace`. Open-source Liquibase has no CHECK change type and silently ignores the `checkConstraint` attribute. Keys, foreign keys and indexes therefore sit in a second changeset, so the replace touches only the `CREATE TABLE`.
-- **No SQL elements:** the changelogs contain no `<sql>`, `<where>` or view elements.
-- **Seed rollback:** the demo seed has an explicit empty `<rollback/>`; rolling back further drops the tables.
-
-To add a table, create `create_table_<table>.xml` in the owning schema's folder with fresh timestamp IDs, and add one `include` line to the master changelog. Never edit a changeset that has already been applied to a shared database; add a new one.
-
-**Seeing the database from IntelliJ.** PostgreSQL is published on `127.0.0.1:5432` (change with `DB_PORT`).
-
-1. Add a PostgreSQL data source for host `localhost`, port `5432`, database `dodo`, user `postgres`, password `local_database_only` (local only).
-2. You can now browse the `databasechangelog` table and every schema.
-3. The changelogs contain no SQL elements, so IntelliJ's "No data sources are configured to run this SQL" hint no longer appears in them. It can still appear in the one bootstrap file, `docker/init.sql`, which is plain SQL by nature; attaching this data source clears it there too.
-
-## curl examples
+### 2. Build and start everything including the frontend
 
 ```sh
-export API=http://localhost:8080/api/v1
+docker compose --profile ui up -d --build --wait
+```
+
+Run this from the project folder. The first build needs an internet connection to download images and dependencies and can take several minutes.
+
+The command starts PostgreSQL, applies the migrations and starts the backend, mock processor, webhook receiver and frontend. It creates a demo business, API key and webhook endpoint for you.
+
+`-d` keeps the application running in the background. `--build` rebuilds the application images. `--wait` waits for services to be running or healthy according to their configured checks. The frontend has no separate health check, so also open it in your browser.
+
+### 3. Check the application
+
+```sh
+docker compose --profile ui ps -a
+```
+
+The database, app, mock processor and receiver should be healthy. The frontend should be running. The `migrate` container should show `Exited (0)`. That is expected because its job ends when migrations finish.
+
+Open http://localhost:3000 in your browser.
+
+If startup fails, inspect the logs
+
+```sh
+docker compose --profile ui logs --tail=100
+```
+
+If a port is already in use, create a file named `.env` in the project folder with alternative host ports
+
+```dotenv
+APP_PORT=18080
+RECEIVER_PORT=18090
+UI_PORT=13000
+DB_PORT=15432
+```
+
+Run the startup command again. With these values, the frontend is at http://localhost:13000 and the API is at http://localhost:18080/api/v1. Use the new ports in the examples below. Internal service addresses do not change. Keep the same project folder and `.env` for later commands.
+
+## Use the application from the frontend
+
+### 1. Connect
+
+Open the frontend and find **Connect your workspace**. Paste this local demo API key and click **Connect**
+
+```text
+demo.local-demo-secret-change-for-real-use
+```
+
+The key is held in the current tab's memory. After refreshing or reopening the page, connect again. **Disconnect** clears the current connection. It does not delete records or stop the application.
+
+### 2. Add a customer
+
+1. Open **Customers**.
+2. Click **Add customer**.
+3. Enter a name such as `Demo Customer` and an email such as `customer@example.com`.
+4. Click **Save customer**.
+
+The customer appears in the list and becomes available when creating an invoice.
+
+### 3. Create an invoice
+
+1. Open **Invoices** and click **Create invoice**.
+2. Select your customer and choose a due date.
+3. Enter `Consulting` as the description, `3` as the quantity and `1299` as the unit price in cents.
+4. Click **Add item**. Enter `Setup`, quantity `1` and unit price `5000`.
+5. Click **Create invoice**.
+
+Enter whole cents, not dollars. For example, `1299` means $12.99. The backend calculates this invoice's total as 8897 cents, displayed as $88.97. Its initial state is Open.
+
+### 4. Try a successful payment
+
+Open the invoice using its row's view button. Under **Test payment method**, select **Successful payment** and click **Pay**.
+
+The page shows that payment has started and refreshes the result. Payment history should show Succeeded and the invoice should show Paid. The payment control is no longer available once the invoice is paid.
+
+### 5. Try a failed payment
+
+Create another invoice and open it. Select **Card declined** and click **Pay**.
+
+Payment history should show Failed. The invoice stays Open. After confirmation of failure, **Start a new payment** lets you choose another method and make a new attempt.
+
+**Send again** repeats the current request with the same idempotency key. It checks the same accepted request rather than creating a new payment attempt.
+
+### 6. Try the other outcomes
+
+Use a new invoice for each case so the results are easy to follow.
+
+| UI option | What to expect |
+|---|---|
+| Successful payment | The attempt succeeds and the invoice becomes Paid |
+| Card declined | The attempt fails and the invoice stays Open |
+| Insufficient funds | The attempt fails and the invoice stays Open |
+| Slow confirmation | The attempt becomes Unknown while the app checks the processor, then succeeds |
+| Payment provider error | The attempt becomes Unknown, then fails when lookup confirms the processor result |
+
+Slow confirmation uses the mock's real 30-second delay. The supplied test record reports settlement after about 41 seconds because the app checks on a retry schedule. Wait for the result. Unknown does not mean failed, and another charge remains blocked while the result is uncertain.
+
+### 7. Check events and webhooks
+
+Open **Events** to see invoice creation and payment outcome events. Open **Webhooks** to see delivery status, attempts and HTTP responses. Each invoice also shows its own webhook deliveries.
+
+The demo receiver is already registered. You do not need **Add endpoint** for this walkthrough. Trying to register its active URL again returns a duplicate error.
+
+You can also open http://localhost:8090/events to see events whose signatures the receiver verified. A delivered webhook normally has HTTP response 200.
+
+## Stop, restart or delete the application data
+
+Run these commands from the same project folder used at startup. Include the `ui` profile so the frontend is included too.
+
+| What you want | Command | What it does |
+|---|---|---|
+| Stop and keep everything for later | `docker compose --profile ui stop` | Stops containers and keeps containers, images and data |
+| Resume after stopping | `docker compose --profile ui start` | Starts the existing containers |
+| Close the stack but keep your data | `docker compose --profile ui down` | Removes the stack's containers and network, but keeps database data and images |
+| Start again after closing | `docker compose --profile ui up -d --build --wait` | Recreates containers and uses the saved data |
+| Close and delete the saved data | `docker compose --profile ui down -v` | Removes containers, network and this project's named volumes |
+| Remove saved data and project service images | `docker compose --profile ui down -v --rmi all` | Also removes service images where Docker allows it |
+
+**Deleting volumes permanently removes customers, invoices, payment attempts, API keys, events and receiver history stored in this stack.** It also removes this project's Maven cache volume if present. It does not delete the extracted source folder. Images and build caches remain unless removed separately. Do not run a reset if you need the data.
+
+To start again with fresh demo data after deleting volumes
+
+```sh
+docker compose --profile ui up -d --build --wait
+```
+
+Closing the browser or terminal does not stop containers started with `-d`.
+
+## Service addresses
+
+These addresses use the default ports.
+
+| Service | Open or connect from your computer | Inside the Compose network |
+|---|---|---|
+| Frontend | http://localhost:3000 | `http://frontend:80` |
+| Backend API | http://localhost:8080/api/v1 | `http://app:8080/api/v1` |
+| Backend health | http://localhost:8080/actuator/health | `http://app:8080/actuator/health` |
+| Swagger UI | http://localhost:8080/swagger-ui.html | Served by the app |
+| OpenAPI document | http://localhost:8080/v3/api-docs.yaml | Served by the app |
+| Verified receiver events | http://localhost:8090/events | `http://demo-receiver:8090/events` |
+| Receiver webhook address | `http://localhost:8090/webhooks` accepts signed POST requests | `http://demo-receiver:8090/webhooks` |
+| Mock processor | No host port is published | `http://mock-psp:8081` |
+| PostgreSQL | `localhost:5432`, database `dodo` | `db:5432` |
+
+For a local database viewer, the demo administrator is `postgres` with password `local_database_only`, unless you override `POSTGRES_PASSWORD` before database initialization. PostgreSQL is not a browser URL. Changing the environment variable later does not change the password in an existing database volume.
+
+All published ports bind to localhost. Docker service names such as `app` and `mock-psp` resolve inside the Compose network, not in your computer's browser. The frontend forwards its API requests through nginx, so no separate API address needs to be entered in the UI.
+
+For the backend-only setup required by the assignment, run `docker compose up`. The frontend is an optional addition and starts only with the `ui` profile.
+
+## Four API examples
+
+These commands use a POSIX shell such as Bash or zsh. Copy the returned IDs into the variables where shown. Choose new idempotency keys when repeating the demo with new invoices.
+
+```sh
+export API='http://localhost:8080/api/v1'
 export AUTH='Authorization: Bearer demo.local-demo-secret-change-for-real-use'
 ```
 
 ### 1. Create a customer
 
 ```sh
-curl -sS $API/customers -H "$AUTH" -H 'Content-Type: application/json' \
-  -d '{"name":"Aarav Sharma","email":"aarav@example.com"}'
+curl -sS "$API/customers" \
+  -H "$AUTH" -H 'Content-Type: application/json' \
+  -d '{"name":"Demo Customer","email":"customer@example.com"}'
 ```
 
-Returns `201` with `id`. Copy it into `CUSTOMER_ID`.
+Expect HTTP 201. Copy the returned `id`.
 
-### 2. Create an invoice (server computes the total)
+### 2. Create an invoice
 
 ```sh
-export CUSTOMER_ID='<id from step 1>'
-curl -sS $API/invoices -H "$AUTH" -H 'Content-Type: application/json' \
+export CUSTOMER_ID='replace-with-customer-id'
+curl -sS "$API/invoices" \
+  -H "$AUTH" -H 'Content-Type: application/json' \
   -d "{\"customer_id\":\"$CUSTOMER_ID\",\"due_date\":\"2026-11-15\",\"items\":[{\"description\":\"Consulting\",\"quantity\":3,\"unit_amount_cents\":1299},{\"description\":\"Setup\",\"quantity\":1,\"unit_amount_cents\":5000}]}"
 ```
 
-Returns `201` with `"state":"open"` and `"total_amount_cents":8897`. A client-supplied total, a decimal or a string amount is rejected.
+Expect HTTP 201, state `open` and total `8897` cents. The backend calculates the total. A supplied total, decimal cents or numeric strings are rejected.
 
-### 3. Pay it successfully
-
-```sh
-export INVOICE_ID='<id from step 2>'
-curl -sS -i $API/invoices/$INVOICE_ID/pay -H "$AUTH" -H 'Content-Type: application/json' \
-  -H 'Idempotency-Key: pay-example-1' -d '{"card_token":"tok_success"}'
-```
-
-Returns `202 Accepted` immediately with `payment_attempt_id`, `"status":"pending"` and a `Location`/`status_url`. **202 means accepted, not paid.** About a second later:
+### 3. Make a successful payment
 
 ```sh
-curl -sS $API/payment-attempts/<payment_attempt_id> -H "$AUTH"   # "status":"succeeded"
-curl -sS $API/invoices/$INVOICE_ID -H "$AUTH"                    # "state":"paid"
+export INVOICE_ID='replace-with-invoice-id'
+curl -sS -i "$API/invoices/$INVOICE_ID/pay" \
+  -H "$AUTH" -H 'Content-Type: application/json' \
+  -H 'Idempotency-Key: demo-success-1' \
+  -d '{"card_token":"tok_success"}'
 ```
 
-Repeating the same request with the same `Idempotency-Key` returns the identical 202 body without calling the PSP again. A new key returns `409 invoice_already_paid`.
-
-### 4. A declined payment
-
-Create another invoice (step 2), then:
+Expect HTTP 202 with `payment_attempt_id`, `status_url` and a Location header. This means accepted, not paid. Copy the attempt ID and poll until it settles.
 
 ```sh
-export DECLINE_INVOICE_ID='<new invoice id>'
-curl -sS -i $API/invoices/$DECLINE_INVOICE_ID/pay -H "$AUTH" -H 'Content-Type: application/json' \
-  -H 'Idempotency-Key: decline-example-1' -d '{"card_token":"tok_card_declined"}'
+export ATTEMPT_ID='replace-with-payment-attempt-id'
+curl -sS "$API/payment-attempts/$ATTEMPT_ID" -H "$AUTH"
+curl -sS "$API/invoices/$INVOICE_ID" -H "$AUTH"
 ```
 
-Also `202`. The attempt becomes `"status":"failed","failure_code":"card_declined"`, the invoice stays `open` (payable with a new key), and `invoice.payment_failed` is delivered to the receiver. Other tokens: `tok_insufficient_funds`, `tok_timeout` (attempt is `unknown` after the 5 s PSP deadline and `succeeded` roughly 40 s after acceptance, via reconciliation), `tok_network_error` (PSP 500 → `unknown` → confirmed `failed` / `processor_error`).
+The attempt becomes `succeeded` and the invoice becomes `paid`. Repeating the same key and body returns the original 202 body. It does not return the latest status or call the processor again. A new key on the paid invoice returns HTTP 409.
 
-Webhooks: `curl -sS $API/webhook-deliveries -H "$AUTH"` (add `?invoice_id=<id>` for one invoice; each row has `event_type`, `invoice_id`, `status`, `attempt_count` and `last_http_status`), `curl -sS $API/events -H "$AUTH"`, and `curl -sS localhost:8090/events`. In the optional UI, each invoice shows its webhooks, and the Webhooks tab lists them all.
+### 4. Make a declined payment
 
-## Tests
+Repeat step 2 to create another invoice. Do not use the paid invoice.
 
-Only Docker is needed; no local JDK. `docker compose up` compiles inside a JDK 21 container, and the tests run the same way:
+```sh
+export DECLINE_INVOICE_ID='replace-with-new-invoice-id'
+curl -sS -i "$API/invoices/$DECLINE_INVOICE_ID/pay" \
+  -H "$AUTH" -H 'Content-Type: application/json' \
+  -H 'Idempotency-Key: demo-decline-1' \
+  -d '{"card_token":"tok_card_declined"}'
+```
+
+Expect HTTP 202. Poll the returned attempt as above. It becomes `failed` with `failure_code` set to `card_declined`. The invoice stays `open` and can be retried using a new key.
+
+| Token | Eventual result |
+|---|---|
+| `tok_success` | Succeeded |
+| `tok_card_declined` | Failed with `card_declined` |
+| `tok_insufficient_funds` | Failed with `insufficient_funds` |
+| `tok_timeout` | Unknown after the worker times out, then succeeded through lookup |
+| `tok_network_error` | Unknown after HTTP 500, then failed with `processor_error` through lookup |
+
+The timeout token takes 30 seconds inside the mock. The supplied end-to-end record reports settlement after about 41 seconds because recovery uses scheduled lookups. This is not a response-time guarantee.
+
+## Inspect webhooks through the API
+
+```sh
+curl -sS "$API/webhook-deliveries?invoice_id=$INVOICE_ID" -H "$AUTH"
+curl -sS "$API/events" -H "$AUTH"
+curl -sS 'http://localhost:8090/events'
+```
+
+The receiver is seeded automatically and receives `invoice.created`, `invoice.paid` and `invoice.payment_failed` events.
+
+For your own receiver, send `POST /api/v1/webhook-endpoints` with a JSON `url` field containing a public HTTPS URL. Save the returned signing secret because it is shown only once. The signing and retry rules are in [DESIGN.md](DESIGN.md).
+
+Lists are paginated. Use the returned `next_cursor` as the next request's `cursor` parameter until there are no more results. There is no manual webhook replay endpoint.
+
+## Run the tests
+
+The main suite uses real PostgreSQL containers and can run without a local JDK
 
 ```sh
 docker compose --profile tests run --rm tests
 ```
 
-That uses the official Maven and JDK 21 image with your checkout mounted. It needs the Docker socket so Testcontainers can start `postgres:18.6-alpine` and apply the real Liquibase changelogs. It also rewrites `openapi.yaml` in your checkout. With JDK 21+ installed, `./mvnw -B clean test` does the same. The suite fails rather than skips when Docker is missing.
+This mounts the checkout and Docker socket. Testcontainers starts its own temporary database. The suite regenerates `openapi.yaml`. Missing Docker causes failure rather than silently skipping the database tests.
 
-36 tests across the modules:
+With Java 21 or later installed, the equivalent is
 
-- 20 PostgreSQL integration tests in `PaymentIntegrationTest`, including security hardening, UUIDv7 ordering, enum wire values, per-invoice webhook results, plain error messages, the database rules, UUIDv7 trace IDs, the body size limit, page size checks and cursors, review settlement without a charge, an overdue never-sent attempt charged exactly once, and webhook endpoint rules (public HTTPS only, no duplicates, deactivation)
-- 2 in `ApiDocumentTest`, which regenerates `openapi.yaml`
-- 8 unit tests: invoice totals, secret encryption, webhook signing, and the startup checks that refuse the public demo key outside demo mode
-- 6 `WebhookReceiverTest` tests for the Java receiver: signature, duplicates, timestamp window, ID mismatch and the body size limit
+```sh
+./mvnw -B clean test
+```
 
-**Tests use the application, not SQL.** No test contains a SQL query or uses `JdbcTemplate`.
+On Windows use `mvnw.cmd -B clean test`.
 
-- **Driving behaviour:** the real HTTP API (controllers, security, validation), `PaymentService`, the worker's claim in `PaymentAttemptRepository`, and `PaymentProcessorClient` against a controlled processor double (`FakeProcessor`, a small local HTTP server whose answers each test sets).
-- **Checking results:** they read back through the same API and repositories.
-- **Atomic rollback:** a `@MockitoSpyBean` makes the event module fail inside the payment transaction.
-- **Lease expiry:** simulated with `app.payment-lease=0s`.
-- **Database rules:** CHECK constraints, the one-unresolved-payment index and the `uuidv7()` defaults are proven by saving entities through the repositories and asserting the named constraint that rejects them.
-- **Isolation:** each test uses fresh customers, invoices and idempotency keys. Due work left over from an earlier test is finished through `PaymentService` before the next one.
-- **Shared setup:** app integration tests extend one base class, `IntegrationTest`. It holds the `@SpringBootTest` settings, turns tracing on as in production (`@AutoConfigureObservability`), imports `TestDatabase` (a `@ServiceConnection` PostgreSQL container bean, so no hand-written datasource properties), and provides the HTTP and fixture helpers (`send`, `get`, `customer`, `invoice`, `key`). Request bodies are built as maps, not escaped JSON strings. The PostgreSQL image comes from one Maven property, `postgres.image`. A test class adds only its own settings with `@TestPropertySource`.
-- **Own database:** the base class's `runsOnlyAgainstItsOwnThrowawayDatabase` test runs in every subclass and asserts the connection is the test container, never the Compose `dodo` database. The receiver test does the same with its own `@ServiceConnection` container.
-- **End to end:** only the opt-in `e2e` profile talks to the running stack. It checks "one processor POST per attempt" through the mock PSP's own API (`post_count`).
-
-The three required by the brief:
+The required payment scenarios are covered by these tests in `PaymentIntegrationTest`.
 
 | Requirement | Test |
 |---|---|
-| N concurrent `POST /pay`, at most one succeeds, no double charge | `concurrentRequestsAcceptOneCharge` (20 clients) |
-| Same key replays same response, no second PSP call | `sameKeyReplaysOriginalResponseWithoutSecondPspCall` |
-| PSP failure leaves no bad state | `timeoutIsUnknownThenRecoveredWithoutSecondCharge`, `processorErrorStaysUnknownUntilLookupConfirmsFailure` |
+| Concurrent payment requests | `concurrentRequestsAcceptOneCharge` |
+| Same-key replay without another POST | `sameKeyReplaysOriginalResponseWithoutSecondPspCall` |
+| Timeout recovery | `timeoutIsUnknownThenRecoveredWithoutSecondCharge` |
+| Processor HTTP 500 | `processorErrorStaysUnknownUntilLookupConfirmsFailure` |
 
-The others cover: lost success after a crash, atomic rollback when event persistence fails, the same key racing on two invoices, stale-worker writes, exhausted recovery, and cross-tenant/revoked-key access.
-
-End-to-end against the real Compose stack, including the real 30-second `tok_timeout` (about one minute). `EndToEndTest` is tagged `e2e`, so the normal build skips it. It runs inside the Compose network, again with no local JDK:
+Other tests cover rollback, lost success, stale workers, key conflicts, tenant isolation and webhook handling. No required scenario is intentionally omitted. The full Compose test is separate from the normal suite
 
 ```sh
 docker compose up -d --build --wait
-```
-
-```sh
 docker compose --profile e2e run --rm e2e
 ```
 
-It creates records in the demo business and never deletes data. It checks processor operations with a read-only query as `psp_user`. The repository is Java-only apart from the optional React UI.
+This checks all mock tokens, 20 concurrent callers, response replay, processor POST counts and verified webhooks. It adds demo records and does not delete them. It reads processor counts through the mock API, not through a direct SQL query.
 
-Optional UI build (Node 22): `cd frontend && npm ci && npm run build`.
+The supplied verification record reports 36 tests passing and a passing end-to-end run on 8 October 2026. This documentation rewrite did not rerun those checks. Load tests, a live container crash during a processor call and a GitHub Actions run are not established by that record. Read its latest results separately from its historical sections.
 
-## API documentation
+## API documentation and errors
 
-The OpenAPI 3.1 document is generated by springdoc from the controllers, the request records and their validation limits, and the typed response records. There is no hand-maintained copy.
+[openapi.yaml](openapi.yaml) is generated from the controllers and response types by `ApiDocumentTest`. Do not edit it by hand. Commit its updated output when the API changes. The workflow checks for a stale file.
 
-- **Live:** while the app runs, open http://localhost:8080/swagger-ui.html, click **Authorize**, paste the API key, and try requests. The raw spec is at http://localhost:8080/v3/api-docs.yaml.
-- **File:** `openapi.yaml` in the repository is rewritten from the running app by `ApiDocumentTest` on every `./mvnw test`. CI fails if the committed copy differs, so commit it whenever an endpoint changes.
+Swagger UI is available at the address above. Use Authorize to enter the demo API key. The raw document is served at `/v3/api-docs.yaml`.
 
-To change the docs, change the code: endpoints, records, `@Valid` constraints, or the few `@Operation`/`@ApiResponse` texts on `payInvoice` and `createInvoice`. Shared error responses and security are configured in `ApiDocumentation.java`.
+Errors have an `error` object containing `code`, `message` and `request_id`. Validation errors may include field details. Use the code in client logic and the request ID when reading logs. Examples include `payment_in_progress`, `invoice_already_paid` and `idempotency_key_conflict`.
 
-## Security
+## Project files
 
-Authentication is a bearer API key only, built from standard Spring Security parts: an `AuthenticationFilter` with `ApiKeyConverter` (reads and checks the header shape) and `ApiKeyAuthenticationProvider` (checks the key). Controllers receive the business with `@AuthenticationPrincipal UUID business`. All security errors are written by one `ErrorWriter`. The configuration (`SecurityConfiguration.java`) is locked down as follows.
-
-**Authentication**
-- `/api/**` requires the `BUSINESS` role, which only a valid, unrevoked API key grants.
-- Only `/actuator/health` (read-only, status only) and the API docs are public. Every other path is denied with a JSON `401`.
-- There is no form login, HTTP Basic, logout, remember-me, session or request cache.
-- CSRF protection is off on purpose: no cookies are used, so there is nothing for CSRF to exploit.
-
-**API key handling**
-- Key hashes are compared in constant time, and unknown key prefixes cost the same as wrong secrets.
-- If the key lookup itself fails (database down), the answer is `503`, not `401`.
-- The `Authorization` header is limited to 256 characters; the `Bearer` scheme name is case-insensitive, as HTTP specifies.
-- A `401` includes `WWW-Authenticate: Bearer`.
-
-**Cross-origin requests**
-- Any request carrying a foreign `Origin` is rejected with `403`, and no CORS allow headers are ever sent.
-- The optional UI is same-origin through its nginx proxy.
-
-**HTTP methods**
-- Only GET, HEAD and POST are accepted. Anything else is rejected with `400` by Spring's strict HTTP firewall, which also blocks path-traversal and encoded-slash tricks.
-
-**Response headers**
-- Content-Security-Policy: `default-src 'none'` for the API, and a self-only policy for Swagger UI.
-- `X-Frame-Options: DENY`, `nosniff`, `Referrer-Policy: no-referrer`, a restrictive `Permissions-Policy`, same-origin opener and resource policies, and `Cache-Control: no-store`.
-- HSTS (one year, subdomains, preload) is sent on HTTPS requests. Behind a TLS-terminating proxy the app trusts `X-Forwarded-Proto`/`X-Forwarded-For` from private-network proxies only (`server.forward-headers-strategy: native`), so HSTS and client IPs stay correct.
-
-**Input limits**
-- Request bodies are limited to 64 KB (`app.max-request-size`, answered with `413`). A declared `Content-Length` over the limit is rejected before authentication or parsing; a chunked body without a length is stopped by Jackson's `maxDocumentLength` while it is read. Headers are limited to 8 KB, with a 10-second connection timeout.
-- JSON with duplicate keys, unknown fields, floats-as-integers or numeric strings is rejected.
-
-**Errors**
-- Error responses never include stack traces, exception names or framework messages.
-
-**Secrets**
-- There is no built-in encryption key: the app will not start without `ENCRYPTION_KEY` (32 bytes, base64). Compose supplies the public all-zero demo key, which the app refuses unless `DEMO_MODE=true`.
-- When running the app outside Docker (IntelliJ, `java -jar`), set your own key, e.g. from `openssl rand -base64 32`.
-- No key, secret or generated password is ever logged.
-
-**Webhook endpoints**
-- A business registers any public `https://` URL. Private, loopback, link-local, carrier-grade NAT and metadata addresses (for example `169.254.169.254`) are refused with `422`, and the check runs again before every delivery, so a DNS change cannot point an endpoint at an internal service. Redirects are never followed.
-- If a host cannot be resolved at registration the URL is refused; if it stops resolving later, the delivery is retried on the normal schedule (`dns_error`) instead of being dropped. The DNS lookup at registration runs outside any database transaction.
-- Hosts in `WEBHOOK_TRUSTED_HOSTS` (comma-separated, case-insensitive) skip the address check and may use `http://`. Compose trusts only `demo-receiver`.
-- One active endpoint per URL per business (`409 webhook_endpoint_exists` otherwise). URLs are stored with a lowercase scheme and host, so `HTTPS://Example.com/x` and `https://example.com/x` count as the same address. `POST /webhook-endpoints/{id}/deactivate` stops future and pending deliveries; to rotate a secret, register the URL again after deactivating, or register a new URL first.
-
-**Optional**
-- Set `API_DOCS_ENABLED=false` to turn off Swagger UI and `/v3/api-docs`.
-
-**Not built**
-- Per-business rate limiting is not built; the brief scopes production rate limiting out (see DESIGN.md §7).
-- Brute-forcing a key is not a practical concern, because each secret is 256 random bits.
-
-## Tracing and logs
-
-Every request and every background job gets a trace ID from **Micrometer Tracing** (OpenTelemetry bridge).
-
-- **UUIDv7 only:** the `platform` module sets the trace ID generator, so every trace ID is a UUIDv7 written as 32 hex characters (the W3C trace ID format). It sorts by time like every other ID in the system.
-- **Where it appears:** in every log line as `[app,<trace id>,<span id>]`, in the `X-Request-Id` response header, and as `request_id` in every error body. Give a client's `request_id` to an operator and they can find every log line for that request.
-- **Across services:** the app passes the trace on to the mock PSP and the webhook receiver (`traceparent` header), so one payment can be followed through all three services' logs.
-- **Callers cannot choose it:** the app ignores incoming `traceparent` headers (`management.tracing.propagation.consume: []`), so a client cannot inject a non-v7 or colliding trace ID.
-- **Background jobs:** each claimed payment attempt or webhook delivery runs in its own trace and logs `job_done job=... id=...` when it finishes.
-- **Access log:** Tomcat writes one line per request to the console with the trace ID and business ID, for example `access ... trace=01a11a3a48d07c18842d6c2fbf5d439e business=01a11810-... GET /api/v1/customers 200 45ms`. Turn it off with `ACCESS_LOG_ENABLED=false`.
-- **JSON logs:** set `LOGGING_STRUCTURED_FORMAT_CONSOLE=ecs` to switch the console to structured JSON; trace IDs become fields.
-- No trace data is exported anywhere; the IDs exist for log correlation only.
-
-## Messages
-
-Everything a person or API client reads is short, plain English. That covers error messages, validation messages, API documentation and UI text. Messages never mention internals such as header names, the database, field paths or error codes, and avoid extra punctuation.
-
-- **Where they live:** all of them are in one class, `app/src/main/java/dev/dodo/common/Messages.java`, which validation annotations, error handlers and the OpenAPI document all use.
-- **Machine-readable codes:** `error.code` values such as `invoice_already_paid` are unchanged, so programs can still branch on them. The UI turns codes into plain sentences.
-- **Logs:** they stay technical, with trace IDs, types and codes, because only operators read them.
-
-## Configuration and secrets
-
-Every value below is a **local demo value**. In production each would come from environment variables or a secret manager, and none would be committed.
-
-| Value | Defined in | Used by | Stored as |
-|---|---|---|---|
-| PostgreSQL superuser password `local_database_only` | `docker-compose.yml` (`db.POSTGRES_PASSWORD`, `migrate.DATABASE_PASSWORD`) | Database container, Liquibase migration job, your IntelliJ data source (port bound to `127.0.0.1` only) | — |
-| App role `app_user` / `local_app_only` | `docker/init.sql` (creates the role); default of `DATABASE_PASSWORD` in `app/src/main/resources/application.yml` | API | — |
-| PSP role `psp_user` / `local_psp_only` | `docker/init.sql`; default in `mock-psp/src/main/resources/application.yml` | Mock PSP | — |
-| Receiver role `receiver_user` / `local_receiver_only` | `docker/init.sql`; default in `webhook-receiver/src/main/resources/application.yml` | Demo webhook receiver | — |
-| `ENCRYPTION_KEY` (AES-256 master key, base64 of 32 bytes) | `docker-compose.yml` (`app`, `migrate`). **No default** in `application.yml`: the app will not start without it. | Encrypts webhook signing secrets | Never in the database |
-| Demo API key `demo.local-demo-secret-change-for-real-use` | Only its SHA-256 hash is in `app/src/main/resources/db/changelog/data/insert_demo_business.xml`. The plain key appears in this README and the tests. | Demo business | `identity.api_keys.secret_hash` |
-| API keys you create | Printed once by the `key-admin` command | Clients | SHA-256 in `identity.api_keys.secret_hash` |
-| Demo webhook signing secret (base64 `AQEB…AQE=`, 32 bytes) | `docker-compose.yml` only, defined once and passed to the app as `DEMO_WEBHOOK_SECRET` and to the receiver as `WEBHOOK_SECRET`. No default in either service. | Signing and verifying demo webhooks | AES-GCM ciphertext in `notifications.webhook_endpoints.secret_ciphertext`; never stored by the receiver |
-| Webhook secrets for endpoints you register | Generated randomly and returned once by `POST /webhook-endpoints` | Your receiver | AES-GCM ciphertext, same column |
-| Test-only values | `IntegrationTest`, `PaymentIntegrationTest`, `WebhookReceiverTest` | Tests (throwaway Testcontainers database) | — |
-
-Non-secret settings are under `app.*` in `app/src/main/resources/application.yml`, each overridable by the environment variable in `${…}`. They bind to one validated `@ConfigurationProperties` record, `AppProperties`, so a missing or out-of-range value stops startup instead of failing later. The receiver has the same for `receiver.*` (`ReceiverProperties`).
-
-Times are durations such as `150ms`, `5s` or `10m`; sizes are data sizes such as `64KB`.
-
-- `PSP_URL`, `PSP_TIMEOUT`, `WEBHOOK_TIMEOUT`, `WEBHOOK_TRUSTED_HOSTS`
-- `PAYMENT_LEASE`, `PAYMENT_RECOVERY`, `PAYMENT_RETRY_DELAYS`, `PAYMENT_REVIEW_INTERVAL`
-- `WEBHOOK_MAX_ATTEMPTS`, `WEBHOOK_LEASE`, `WEBHOOK_DELIVERY_BUDGET`, `WEBHOOK_RETRY_DELAYS`
-- `WORKERS_ENABLED`, `WORKER_POLL_INTERVAL`, `WORKER_CONCURRENCY`
-- `MAX_REQUEST_SIZE`, `ACCESS_LOG_ENABLED`, `API_DOCS_ENABLED`
-- `DEMO_MODE`, `DEMO_WEBHOOK_URL`, `DEMO_WEBHOOK_SECRET`, `LIQUIBASE_CONTEXTS` (demo stack only)
-
-The encryption key and the demo webhook secret are checked at startup (base64 of 32 bytes), so a bad value stops the app with a clear message. Shared HTTP client settings (`spring.http.client.*`: JDK client, 1-second connect timeout, no redirects) apply to both outgoing clients; each client sets only its own read timeout.
-
-To run the app from IntelliJ or `java -jar` instead of Docker, set at least your own `ENCRYPTION_KEY`. To get the demo business and key locally, also set `DEMO_MODE=true`, `DEMO_WEBHOOK_URL`, `DEMO_WEBHOOK_SECRET` and, for the migration run, `LIQUIBASE_CONTEXTS=demo`.
-
-Host ports are `APP_PORT`, `RECEIVER_PORT` and `UI_PORT` in `docker-compose.yml`.
-
-## Code structure and design principles
-
-Spring Boot does the plumbing so the code holds business rules only:
-
-- **Spring Data JPA** repositories, auditing and the scroll API instead of hand-written DAOs, timestamps and paging; QueryDSL only for worker claims and guarded updates.
-- **Spring Security** `AuthenticationFilter`, `AuthenticationConverter` and `AuthenticationProvider` instead of a hand-written filter, and `@AuthenticationPrincipal` in controllers.
-- **`ResponseEntityExceptionHandler`** for all standard web errors, `ResponseEntity.created(...)` for `Location` headers.
-- **Lombok** for entities (`@Getter @Builder`), constructor injection (`@RequiredArgsConstructor`, with `@Qualifier` copied through `lombok.config`) and loggers (`@Slf4j`).
-- **`RestClient` beans** (`pspClient`, `webhookClient`) built from Boot's auto-configured builder, so they are traced and use the `spring.http.client.*` settings.
-- **`@ConfigurationProperties`** records with `Duration` and `DataSize` values and startup validation instead of `@Value`.
-- **Boot task executors** (`ThreadPoolTaskExecutorBuilder`) with graceful shutdown for the two workers; one `Jobs` helper claims and runs work for both.
-- **Spring Security Crypto** (`AesBytesEncryptor` in GCM mode, `KeyGenerators`) for webhook secrets and API keys.
-- **Spring utilities** for checks: `StringUtils.hasText`, `CollectionUtils.isEmpty`, `ObjectUtils.isEmpty`, `Assert`, plus `Objects` and `Optional`.
-- **`@ServiceConnection`** Testcontainers, one test base class, and Spotless (`./mvnw spotless:apply`) for one code format: tabs, ordered imports, no unused imports.
-- **A shared `platform` module**, used by all three services as a Spring Boot auto-configuration: UUIDv7 generation, UUIDv7 trace IDs, the `X-Request-Id` header, the `Clock`, the auditing time source, SHA-256 hashing and the enum wire-value helpers.
-
-Design principles that keep it scalable:
-
-| Principle | Where |
+| File or folder | What it contains |
 |---|---|
-| Modular monolith, schema per module | `identity`, `customers`, `billing`, `payments`, `notifications`; modules share IDs, not JPA associations, so one can be split out later |
-| Single responsibility | controllers only map HTTP; services hold rules; repositories only load and save; workers only schedule |
-| Dependency inversion | `payments` depends on the `InvoicePayments` interface, and `billing` on `PaymentActivity`, not on each other's classes |
-| Open/closed | a new status or event type is one enum constant; `WireValue` and `WireValueConverter` handle JSON and the database for all of them |
-| DRY | one `Pages` for every list, one `Messages` for every user text, one `Errors` handler, one `IntegrationTest` base |
-| Stateless API, horizontal scaling | no session state; any number of API and worker instances share work through `SKIP LOCKED` claims, leases and claim versions |
-| Idempotency and exactly-once effects | idempotency key plus request fingerprint, a unique index, and one unresolved attempt per invoice |
-| Database-enforced invariants | CHECK constraints, partial unique indexes and row locks, so rules hold even under races |
-| Transactional outbox | events and webhook deliveries are written in the same transaction as the payment result |
-| Fail fast | validated configuration, `ddl-auto: validate`, `Assert` on secrets and keys |
-| Keyset pagination and UUIDv7 | stable cost per page, and time-ordered keys keep indexes compact |
-| Defense in depth | API key hashing, strict headers, CORS rejection, request size limits, encrypted webhook secrets |
-| Contract from code | `openapi.yaml` is generated from the controllers by a test |
+| [DESIGN.md](DESIGN.md) | Language choice, data model, state diagrams, failure cases and trade-offs |
+| [AI_USAGE.md](AI_USAGE.md) | AI contribution, my decisions and corrections |
+| [openapi.yaml](openapi.yaml) | Generated API specification |
+| `app` | Identity, customers, billing, payments and notifications |
+| `mock-psp` | HTTP mock payment processor |
+| `webhook-receiver` | Signature-verifying Java receiver |
+| `platform` | Shared infrastructure and tracing |
+| `frontend` | React UI |
+| `docker/init.sql` | Database roles, schemas and grants |
+| `app/src/main/resources/db/changelog` | Liquibase migrations |
 
-## Optional UI
+## Local demo settings
 
-The brief lists a UI as out of scope. It was added on request to make demos easier, runs only with `--profile ui`, and can be deleted (`frontend/` plus its Compose service) without affecting the backend. It only renders API data: totals, eligibility (`allowed_actions`) and outcomes all come from the backend. The API key is held in tab memory.
+The demo business ID is `01a11810-ce4f-76f3-9863-cbf7566684b5`. Compose supplies public local database passwords, a demo API key, a webhook secret and an encryption key. These are for this demo only.
 
-## API key administration
-
-There is no public sign-up. An operator creates or revokes keys:
+Create another key for the demo business
 
 ```sh
 docker compose run --rm --no-deps app \
@@ -361,22 +354,6 @@ docker compose run --rm --no-deps app \
   --operation=create --business-id=01a11810-ce4f-76f3-9863-cbf7566684b5
 ```
 
-The key is printed once. To rotate, create a second key, switch clients, then revoke the old one with `--operation=revoke --key-id=<key id>` (same flags otherwise). Revocation takes effect on the next request.
+The CLI prints the key once and gives its ID. To revoke it, use the same command with `--operation=revoke` and `--key-id=YOUR_KEY_ID`. Keep the business ID. Rotation means creating a second key, switching clients and revoking the old one.
 
-## Going live
-
-Compose is the local demo stack. For a real deployment, change these and nothing else:
-
-1. **Secrets:** a unique `ENCRYPTION_KEY` (`openssl rand -base64 32`) from a secret manager. Leave `DEMO_MODE` unset (false) and `LIQUIBASE_CONTEXTS` unset (`default`), so no demo business, key or endpoint is created. The app refuses the public demo key outside demo mode.
-2. **Database:** a managed PostgreSQL 18. Run `docker/init.sql` once with your own role passwords (it ships local passwords), point `DATABASE_URL`/`DATABASE_USER`/`DATABASE_PASSWORD` at it, and run the image once with `MIGRATE=true SPRING_MAIN_WEB_APPLICATION_TYPE=none WORKERS_ENABLED=false` as the migration job.
-3. **TLS:** terminate HTTPS at a load balancer or proxy on a private network; the app trusts its forwarded headers and then sends HSTS.
-4. **Processor:** set `PSP_URL` to the real processor and review `PSP_TIMEOUT`.
-5. **Keys:** create each business's API key with the `key-admin` command; businesses register their own `https://` webhook endpoints.
-6. **Scale:** run API replicas with `WORKERS_ENABLED=false` and a separate worker deployment with `WORKERS_ENABLED=true` (same image).
-7. **Do not deploy** `mock-psp`, `demo-receiver` or the optional `ui` service.
-
-Known gaps before real traffic (see DESIGN.md §7): rate limiting, trace export and alerting, and a real processor contract.
-
-## Demo Video
-
-**Pending — the author will record it and insert the accessible link here before submission.**
+This project is a local assignment demo. A real deployment needs a reviewed processor integration, settlement reconciliation, TLS, managed secrets, controlled webhook egress, rate limits and alerts. Changing `PSP_URL` alone does not make it compatible with a real provider.
