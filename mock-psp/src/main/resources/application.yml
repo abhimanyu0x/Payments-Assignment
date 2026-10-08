@@ -1,21 +1,43 @@
 server:
   port: ${PORT:8081}
+  max-http-request-header-size: 8KB
+  error:
+    include-stacktrace: never
+    include-message: never
+    whitelabel:
+      enabled: false
 spring:
+  application:
+    name: mock-psp
   datasource:
     url: ${DATABASE_URL:jdbc:postgresql://localhost:5432/dodo}
     username: ${DATABASE_USER:psp_user}
     password: ${DATABASE_PASSWORD:local_psp_only}
     hikari:
       maximum-pool-size: 5
+  jpa:
+    open-in-view: false
+    hibernate:
+      ddl-auto: validate
+    properties:
+      hibernate:
+        jdbc:
+          time_zone: UTC
   jackson:
     deserialization:
       fail-on-unknown-properties: true
       accept-float-as-int: false
 management:
+  tracing:
+    sampling:
+      probability: 1.0
   endpoints:
+    access:
+      default: none
     web:
       exposure:
         include: health
   endpoint:
     health:
+      access: read-only
       show-details: never

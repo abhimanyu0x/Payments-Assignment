@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<databaseChangeLog
+        xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+        xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+        xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog https://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-4.31.xsd">
+    <changeSet id="20261008082658188" author="Abhimanyu" context="demo">
+        <insert schemaName="identity" tableName="businesses">
+            <column name="id" value="01a11810-ce4f-76f3-9863-cbf7566684b5"/>
+            <column name="name" value="Demo Business"/>
+        </insert>
+        <insert schemaName="identity" tableName="api_keys">
+            <column name="id" value="01a11810-ce52-78ac-91ac-83f818b8160f"/>
+            <column name="business_id" value="01a11810-ce4f-76f3-9863-cbf7566684b5"/>
+            <column name="key_prefix" value="demo"/>
+            <column name="secret_hash" value="c55e0d4c2f06f316063c62eb1468e51f50e7bdc4af6dfe4e38fc5a21e09591a7"/>
+        </insert>
+        <rollback/>
+    </changeSet>
+</databaseChangeLog>

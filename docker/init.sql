@@ -1,2 +1,16 @@
 CREATE ROLE app_user LOGIN PASSWORD 'local_app_only';
 CREATE ROLE psp_user LOGIN PASSWORD 'local_psp_only';
+CREATE ROLE receiver_user LOGIN PASSWORD 'local_receiver_only';
+CREATE SCHEMA identity;
+CREATE SCHEMA customers;
+CREATE SCHEMA billing;
+CREATE SCHEMA payments;
+CREATE SCHEMA notifications;
+CREATE SCHEMA mock_psp;
+CREATE SCHEMA demo_receiver;
+GRANT USAGE ON SCHEMA identity, customers, billing, payments, notifications TO app_user;
+ALTER DEFAULT PRIVILEGES IN SCHEMA identity, customers, billing, payments, notifications GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO app_user;
+GRANT USAGE ON SCHEMA mock_psp TO psp_user;
+ALTER DEFAULT PRIVILEGES IN SCHEMA mock_psp GRANT SELECT, INSERT, UPDATE ON TABLES TO psp_user;
+GRANT USAGE ON SCHEMA demo_receiver TO receiver_user;
+ALTER DEFAULT PRIVILEGES IN SCHEMA demo_receiver GRANT SELECT, INSERT ON TABLES TO receiver_user;

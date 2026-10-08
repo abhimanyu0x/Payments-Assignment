@@ -1,0 +1,45 @@
+server:
+  port: ${PORT:8090}
+  max-http-request-header-size: 8KB
+  error:
+    include-stacktrace: never
+    include-message: never
+    whitelabel:
+      enabled: false
+spring:
+  application:
+    name: demo-receiver
+  datasource:
+    url: ${DATABASE_URL:jdbc:postgresql://localhost:5432/dodo}
+    username: ${DATABASE_USER:receiver_user}
+    password: ${DATABASE_PASSWORD:local_receiver_only}
+    hikari:
+      maximum-pool-size: 5
+  jpa:
+    open-in-view: false
+    hibernate:
+      ddl-auto: validate
+    properties:
+      hibernate:
+        jdbc:
+          time_zone: UTC
+  liquibase:
+    enabled: false
+management:
+  tracing:
+    sampling:
+      probability: 1.0
+  endpoints:
+    access:
+      default: none
+    web:
+      exposure:
+        include: health
+  endpoint:
+    health:
+      access: read-only
+      show-details: never
+receiver:
+  webhook-secret: ${WEBHOOK_SECRET:}
+  tolerance: 5m
+  max-body-size: 64KB

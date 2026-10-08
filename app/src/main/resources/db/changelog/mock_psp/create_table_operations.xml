@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<databaseChangeLog
+        xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+        xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+        xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog https://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-4.31.xsd">
+    <changeSet id="20261008082658178" author="Abhimanyu">
+        <createTable schemaName="mock_psp" tableName="operations">
+            <column name="operation_id" type="uuid">
+                <constraints primaryKey="true" nullable="false"/>
+            </column>
+            <column name="request_fingerprint" type="text">
+                <constraints nullable="false"/>
+            </column>
+            <column name="amount_cents" type="bigint">
+                <constraints nullable="false"/>
+            </column>
+            <column name="currency" type="text">
+                <constraints nullable="false"/>
+            </column>
+            <column name="card_token" type="text">
+                <constraints nullable="false"/>
+            </column>
+            <column name="status" type="text">
+                <constraints nullable="false"/>
+            </column>
+            <column name="psp_ref" type="uuid"/>
+            <column name="failure_code" type="text"/>
+            <column name="complete_after" type="TIMESTAMP WITH TIME ZONE">
+                <constraints nullable="false"/>
+            </column>
+            <column name="created_at" type="TIMESTAMP WITH TIME ZONE" defaultValueComputed="now()">
+                <constraints nullable="false"/>
+            </column>
+            <column name="completed_at" type="TIMESTAMP WITH TIME ZONE"/>
+            <column name="post_count" type="integer" defaultValueNumeric="1">
+                <constraints nullable="false"/>
+            </column>
+        </createTable>
+        <modifySql dbms="postgresql">
+            <regExpReplace replace="\)$" with=", CONSTRAINT operations_amount_cents_check CHECK (amount_cents > 0), CONSTRAINT operations_currency_check CHECK (currency = 'USD'), CONSTRAINT operations_status_check CHECK (status IN ('pending', 'succeeded', 'failed')))"/>
+        </modifySql>
+    </changeSet>
+    <changeSet id="20261008082658180" author="Abhimanyu">
+        <createIndex schemaName="mock_psp" tableName="operations" indexName="mock_due">
+            <column name="complete_after"/>
+        </createIndex>
+        <modifySql dbms="postgresql">
+            <append value=" WHERE status = 'pending'"/>
+        </modifySql>
+    </changeSet>
+</databaseChangeLog>

@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<databaseChangeLog
+        xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+        xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+        xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog https://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-4.31.xsd">
+    <changeSet id="20261008082658165" author="Abhimanyu">
+        <createTable schemaName="notifications" tableName="events">
+            <column name="id" type="uuid" defaultValueComputed="uuidv7()">
+                <constraints primaryKey="true" nullable="false"/>
+            </column>
+            <column name="business_id" type="uuid">
+                <constraints nullable="false" foreignKeyName="fk_events_business" references="identity.businesses(id)"/>
+            </column>
+            <column name="event_type" type="text">
+                <constraints nullable="false"/>
+            </column>
+            <column name="source_id" type="uuid">
+                <constraints nullable="false"/>
+            </column>
+            <column name="invoice_id" type="uuid">
+                <constraints nullable="false"/>
+            </column>
+            <column name="data" type="text">
+                <constraints nullable="false"/>
+            </column>
+            <column name="created_at" type="TIMESTAMP WITH TIME ZONE" defaultValueComputed="now()">
+                <constraints nullable="false"/>
+            </column>
+        </createTable>
+    </changeSet>
+    <changeSet id="20261008082658167" author="Abhimanyu">
+        <addUniqueConstraint schemaName="notifications" tableName="events" columnNames="business_id, event_type, source_id" constraintName="events_business_id_event_type_source_id_key"/>
+        <addUniqueConstraint schemaName="notifications" tableName="events" columnNames="business_id, id" constraintName="events_business_id_id_key"/>
+        <createIndex schemaName="notifications" tableName="events" indexName="events_invoice">
+            <column name="business_id"/>
+            <column name="invoice_id"/>
+        </createIndex>
+        <createIndex schemaName="notifications" tableName="events" indexName="events_list">
+            <column name="business_id"/>
+            <column name="created_at" descending="true"/>
+            <column name="id" descending="true"/>
+        </createIndex>
+    </changeSet>
+</databaseChangeLog>

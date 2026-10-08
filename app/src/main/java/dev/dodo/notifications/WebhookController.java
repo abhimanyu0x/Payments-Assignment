@@ -1,129 +1,72 @@
 package dev.dodo.notifications;
 
-import dev.dodo.http.*;
-import dev.dodo.identity.Business;
-import jakarta.servlet.http.HttpServletRequest;
+import dev.dodo.common.ErrorResponse;
+import dev.dodo.common.Messages;
+import dev.dodo.common.Page;
+import dev.dodo.common.PageQuery;
+import io.swagger.v3.oas.annotations.media.Content;
+import io.swagger.v3.oas.annotations.media.Schema;
+import io.swagger.v3.oas.annotations.responses.ApiResponse;
+import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
-import jakarta.validation.constraints.*;
+import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.Size;
 import java.net.URI;
-import java.util.*;
-import org.springframework.beans.factory.annotation.Value;
-import org.springframework.http.*;
-import org.springframework.jdbc.core.JdbcTemplate;
-import org.springframework.web.bind.annotation.*;
+import java.util.UUID;
+import lombok.RequiredArgsConstructor;
+import org.springdoc.core.annotations.ParameterObject;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
+import org.springframework.security.core.annotation.AuthenticationPrincipal;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
+import org.springframework.web.bind.annotation.ResponseStatus;
+import org.springframework.web.bind.annotation.RestController;
 
 @RestController
+@RequiredArgsConstructor
+@Tag(name = "Webhooks and events")
 @RequestMapping("/api/v1")
 public class WebhookController {
-  public record Register(@NotBlank @Size(max = 2048) String url) {}
+	public record NewWebhookEndpoint(@NotBlank(message = Messages.WEBHOOK_ADDRESS_REQUIRED) @Size(max = 2048, message = Messages.WEBHOOK_ADDRESS_TOO_LONG) String url) {
+	}
 
-  private final JdbcTemplate jdbc;
-  private final SecretCipher cipher;
-  private final Pages pages;
-  private final Json json;
-  private final String allowedUrl;
+	private final WebhookService service;
 
-  public WebhookController(
-      JdbcTemplate jdbc,
-      SecretCipher cipher,
-      Pages pages,
-      Json json,
-      @Value("${app.webhook-url}") String allowedUrl) {
-    this.jdbc = jdbc;
-    this.cipher = cipher;
-    this.pages = pages;
-    this.json = json;
-    this.allowedUrl = allowedUrl;
-  }
+	@PostMapping("/webhook-endpoints")
+	@ResponseStatus(HttpStatus.CREATED)
+	@ApiResponse(responseCode = "409", description = Messages.WEBHOOK_ADDRESS_EXISTS, content = @Content(schema = @Schema(implementation = ErrorResponse.class)))
+	public ResponseEntity<RegisteredWebhookEndpoint> registerWebhookEndpoint(@AuthenticationPrincipal UUID business, @Valid @RequestBody NewWebhookEndpoint body) {
+		var endpoint = service.register(business, body.url());
+		return ResponseEntity.created(URI.create("/api/v1/webhook-endpoints/" + endpoint.id())).body(endpoint);
+	}
 
-  @PostMapping("/webhook-endpoints")
-  public ResponseEntity<?> register(HttpServletRequest r, @Valid @RequestBody Register body) {
-    if (!allowedUrl.equals(body.url()))
-      throw ApiError.invalid("For this local demo the URL must equal the configured WEBHOOK_URL.");
-    byte[] secret = cipher.generate();
-    UUID id = UUID.randomUUID();
-    jdbc.update(
-        "INSERT INTO notifications.webhook_endpoints(id,business_id,url,secret_ciphertext) VALUES"
-            + " (?,?,?,?)",
-        id,
-        Business.from(r),
-        body.url(),
-        cipher.encrypt(secret));
-    return ResponseEntity.created(URI.create("/api/v1/webhook-endpoints/" + id))
-        .body(
-            Map.of(
-                "id",
-                id,
-                "url",
-                body.url(),
-                "signing_secret",
-                Base64.getEncoder().encodeToString(secret),
-                "active",
-                true));
-  }
+	@GetMapping("/webhook-endpoints/{id}")
+	public WebhookEndpoint getWebhookEndpoint(@AuthenticationPrincipal UUID business, @PathVariable UUID id) {
+		return service.endpoint(business, id);
+	}
 
-  @GetMapping("/webhook-endpoints/{id}")
-  public Object endpoint(HttpServletRequest r, @PathVariable UUID id) {
-    var rows =
-        jdbc.queryForList(
-            "SELECT id,url,active,created_at FROM notifications.webhook_endpoints WHERE"
-                + " business_id=? AND id=?",
-            Business.from(r),
-            id);
-    if (rows.isEmpty()) throw ApiError.missing();
-    return Rows.clean(rows.get(0));
-  }
+	@PostMapping("/webhook-endpoints/{id}/deactivate")
+	public WebhookEndpoint deactivateWebhookEndpoint(@AuthenticationPrincipal UUID business, @PathVariable UUID id) {
+		return service.deactivate(business, id);
+	}
 
-  @GetMapping("/webhook-endpoints")
-  public Object endpoints(
-      HttpServletRequest r,
-      @RequestParam(defaultValue = "20") int limit,
-      @RequestParam(required = false) String cursor) {
-    return pages.list(
-        "notifications.webhook_endpoints",
-        "id,url,active,created_at",
-        Business.from(r),
-        "endpoints",
-        "",
-        List.of(),
-        limit,
-        cursor);
-  }
+	@GetMapping("/webhook-endpoints")
+	public Page<WebhookEndpoint> listWebhookEndpoints(@AuthenticationPrincipal UUID business, @Valid @ParameterObject PageQuery page) {
+		return service.endpoints(business, page);
+	}
 
-  @GetMapping("/webhook-deliveries")
-  public Object deliveries(
-      HttpServletRequest r,
-      @RequestParam(defaultValue = "20") int limit,
-      @RequestParam(required = false) String cursor) {
-    return pages.list(
-        "notifications.webhook_deliveries",
-        "id,event_id,endpoint_id,status,attempt_count,next_attempt_at,last_http_status,last_error_code,created_at,delivered_at",
-        Business.from(r),
-        "deliveries",
-        "",
-        List.of(),
-        limit,
-        cursor);
-  }
+	@GetMapping("/webhook-deliveries")
+	public Page<WebhookDelivery> listWebhookDeliveries(@AuthenticationPrincipal UUID business, @RequestParam(name = "invoice_id", required = false) UUID invoiceId, @Valid @ParameterObject PageQuery page) {
+		return service.deliveries(business, invoiceId, page);
+	}
 
-  @GetMapping("/events")
-  public Object events(
-      HttpServletRequest r,
-      @RequestParam(defaultValue = "20") int limit,
-      @RequestParam(required = false) String cursor) {
-    var page =
-        pages.list(
-            "notifications.events",
-            "id,event_type,payload,created_at",
-            Business.from(r),
-            "events",
-            "",
-            List.of(),
-            limit,
-            cursor);
-    @SuppressWarnings("unchecked")
-    var rows = (List<Map<String, Object>>) page.get("data");
-    for (var row : rows) row.put("payload", json.read(row.get("payload").toString()));
-    return page;
-  }
+	@GetMapping("/events")
+	public Page<Event> listEvents(@AuthenticationPrincipal UUID business, @Valid @ParameterObject PageQuery page) {
+		return service.events(business, page);
+	}
 }

@@ -1,40 +1,38 @@
 package dev.dodo.customers;
 
-import dev.dodo.http.*;
-import java.util.*;
-import org.springframework.jdbc.core.JdbcTemplate;
+import dev.dodo.common.ApiError;
+import dev.dodo.common.Messages;
+import dev.dodo.common.Page;
+import dev.dodo.common.PageQuery;
+import dev.dodo.common.Pages;
+import java.util.UUID;
+import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 @Service
+@RequiredArgsConstructor
+@Transactional(readOnly = true)
 public class CustomerService {
-  private final JdbcTemplate jdbc;
+	private static final QCustomerEntity CUSTOMER = QCustomerEntity.customerEntity;
+	private final CustomerRepository customers;
+	private final Pages pages;
 
-  public CustomerService(JdbcTemplate jdbc) {
-    this.jdbc = jdbc;
-  }
+	@Transactional
+	public Customer create(UUID business, String name, String email) {
+		var customer = CustomerEntity.builder().businessId(business).name(name.strip()).email(email.strip()).build();
+		return Customer.from(customers.save(customer));
+	}
 
-  public Map<String, Object> create(UUID business, String name, String email) {
-    UUID id = UUID.randomUUID();
-    jdbc.update(
-        "INSERT INTO customers.customers(id,business_id,name,email) VALUES (?,?,?,?)",
-        id,
-        business,
-        name.strip(),
-        email.strip());
-    return get(business, id);
-  }
+	public Customer get(UUID business, UUID id) {
+		return customers.findByBusinessIdAndId(business, id).map(Customer::from).orElseThrow(ApiError::missing);
+	}
 
-  public Map<String, Object> get(UUID business, UUID id) {
-    var rows =
-        jdbc.queryForList(
-            "SELECT id,name,email,created_at FROM customers.customers WHERE business_id=? AND id=?",
-            business,
-            id);
-    if (rows.isEmpty()) throw ApiError.missing();
-    return Rows.clean(rows.get(0));
-  }
+	public Page<Customer> list(UUID business, PageQuery page) {
+		return pages.list(customers, CUSTOMER.businessId.eq(business), business, "customers", page, Customer::from);
+	}
 
-  public void require(UUID business, UUID id) {
-    get(business, id);
-  }
+	public void require(UUID business, UUID id) {
+		if (!customers.existsByBusinessIdAndId(business, id)) throw new ApiError(404, "not_found", Messages.CUSTOMER_NOT_FOUND);
+	}
 }

@@ -1,0 +1,11 @@
+package dev.dodo.identity;
+
+import java.util.Optional;
+import java.util.UUID;
+import org.springframework.data.jpa.repository.JpaRepository;
+
+public interface ApiKeyRepository extends JpaRepository<ApiKeyEntity, UUID> {
+	Optional<ApiKeyEntity> findByKeyPrefixAndRevokedAtIsNull(String keyPrefix);
+
+	Optional<ApiKeyEntity> findByIdAndBusinessIdAndRevokedAtIsNull(UUID id, UUID businessId);
+}

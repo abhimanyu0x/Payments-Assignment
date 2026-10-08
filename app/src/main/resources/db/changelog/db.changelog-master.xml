@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<databaseChangeLog
+        xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+        xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+        xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog https://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-4.31.xsd">
+    <include file="identity/create_table_businesses.xml" relativeToChangelogFile="true"/>
+    <include file="identity/create_table_api_keys.xml" relativeToChangelogFile="true"/>
+    <include file="customers/create_table_customers.xml" relativeToChangelogFile="true"/>
+    <include file="billing/create_table_invoices.xml" relativeToChangelogFile="true"/>
+    <include file="billing/create_table_invoice_items.xml" relativeToChangelogFile="true"/>
+    <include file="payments/create_table_payment_attempts.xml" relativeToChangelogFile="true"/>
+    <include file="notifications/create_table_webhook_endpoints.xml" relativeToChangelogFile="true"/>
+    <include file="notifications/create_table_events.xml" relativeToChangelogFile="true"/>
+    <include file="notifications/create_table_webhook_deliveries.xml" relativeToChangelogFile="true"/>
+    <include file="mock_psp/create_table_operations.xml" relativeToChangelogFile="true"/>
+    <include file="demo_receiver/create_table_received_events.xml" relativeToChangelogFile="true"/>
+    <include file="data/insert_demo_business.xml" relativeToChangelogFile="true"/>
+</databaseChangeLog>

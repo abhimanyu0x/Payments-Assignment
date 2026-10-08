@@ -1,0 +1,100 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<databaseChangeLog
+        xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+        xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+        xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog https://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-4.31.xsd">
+    <changeSet id="20261008082658146" author="Abhimanyu">
+        <createTable schemaName="payments" tableName="payment_attempts">
+            <column name="id" type="uuid" defaultValueComputed="uuidv7()">
+                <constraints primaryKey="true" nullable="false"/>
+            </column>
+            <column name="business_id" type="uuid">
+                <constraints nullable="false"/>
+            </column>
+            <column name="invoice_id" type="uuid">
+                <constraints nullable="false"/>
+            </column>
+            <column name="idempotency_key" type="text">
+                <constraints nullable="false"/>
+            </column>
+            <column name="request_fingerprint" type="text">
+                <constraints nullable="false"/>
+            </column>
+            <column name="mock_card_token" type="text">
+                <constraints nullable="false"/>
+            </column>
+            <column name="amount_cents" type="bigint">
+                <constraints nullable="false"/>
+            </column>
+            <column name="status" type="text">
+                <constraints nullable="false"/>
+            </column>
+            <column name="psp_reference" type="text"/>
+            <column name="failure_code" type="text"/>
+            <column name="last_error_code" type="text"/>
+            <column name="review_required" type="boolean" defaultValueBoolean="false">
+                <constraints nullable="false"/>
+            </column>
+            <column name="next_attempt_at" type="TIMESTAMP WITH TIME ZONE" defaultValueComputed="now()">
+                <constraints nullable="false"/>
+            </column>
+            <column name="lease_expires_at" type="TIMESTAMP WITH TIME ZONE"/>
+            <column name="claim_version" type="bigint" defaultValueNumeric="0">
+                <constraints nullable="false"/>
+            </column>
+            <column name="reconciliation_round_count" type="integer" defaultValueNumeric="0">
+                <constraints nullable="false"/>
+            </column>
+            <column name="processor_call_count" type="integer" defaultValueNumeric="0">
+                <constraints nullable="false"/>
+            </column>
+            <column name="recovery_deadline_at" type="TIMESTAMP WITH TIME ZONE">
+                <constraints nullable="false"/>
+            </column>
+            <column name="created_at" type="TIMESTAMP WITH TIME ZONE" defaultValueComputed="now()">
+                <constraints nullable="false"/>
+            </column>
+            <column name="updated_at" type="TIMESTAMP WITH TIME ZONE" defaultValueComputed="now()">
+                <constraints nullable="false"/>
+            </column>
+            <column name="completed_at" type="TIMESTAMP WITH TIME ZONE"/>
+        </createTable>
+        <modifySql dbms="postgresql">
+            <regExpReplace replace="\)$" with=", CONSTRAINT payment_attempts_amount_cents_check CHECK (amount_cents > 0), CONSTRAINT payment_attempts_status_check CHECK (status IN ('pending', 'unknown', 'succeeded', 'failed')), CONSTRAINT payment_attempts_review_required_check CHECK (NOT review_required OR status = 'unknown'), CONSTRAINT payment_attempts_completed_at_check CHECK ((status IN ('succeeded', 'failed')) = (completed_at IS NOT NULL)))"/>
+        </modifySql>
+    </changeSet>
+    <changeSet id="20261008082658149" author="Abhimanyu">
+        <addUniqueConstraint schemaName="payments" tableName="payment_attempts" columnNames="business_id, idempotency_key" constraintName="payment_attempts_business_id_idempotency_key_key"/>
+        <addUniqueConstraint schemaName="payments" tableName="payment_attempts" columnNames="business_id, id" constraintName="payment_attempts_business_id_id_key"/>
+        <addForeignKeyConstraint baseTableSchemaName="payments" baseTableName="payment_attempts" baseColumnNames="business_id, invoice_id" referencedTableSchemaName="billing" referencedTableName="invoices" referencedColumnNames="business_id, id" constraintName="fk_payment_attempts_invoice"/>
+        <createIndex schemaName="payments" tableName="payment_attempts" indexName="payment_history">
+            <column name="invoice_id"/>
+            <column name="created_at" descending="true"/>
+            <column name="id" descending="true"/>
+        </createIndex>
+    </changeSet>
+    <changeSet id="20261008082658151" author="Abhimanyu">
+        <createIndex schemaName="payments" tableName="payment_attempts" indexName="one_unresolved_attempt" unique="true">
+            <column name="invoice_id"/>
+        </createIndex>
+        <modifySql dbms="postgresql">
+            <append value=" WHERE status IN ('pending', 'unknown')"/>
+        </modifySql>
+    </changeSet>
+    <changeSet id="20261008082658154" author="Abhimanyu">
+        <createIndex schemaName="payments" tableName="payment_attempts" indexName="one_successful_attempt" unique="true">
+            <column name="invoice_id"/>
+        </createIndex>
+        <modifySql dbms="postgresql">
+            <append value=" WHERE status = 'succeeded'"/>
+        </modifySql>
+    </changeSet>
+    <changeSet id="20261008082658156" author="Abhimanyu">
+        <createIndex schemaName="payments" tableName="payment_attempts" indexName="payment_due">
+            <column name="next_attempt_at"/>
+        </createIndex>
+        <modifySql dbms="postgresql">
+            <append value=" WHERE status IN ('pending', 'unknown') AND NOT review_required"/>
+        </modifySql>
+    </changeSet>
+</databaseChangeLog>
