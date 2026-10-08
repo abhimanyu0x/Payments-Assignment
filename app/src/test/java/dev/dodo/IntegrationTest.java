@@ -30,9 +30,11 @@ import org.testcontainers.containers.PostgreSQLContainer;
 	webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
 	properties = {
 		"spring.liquibase.enabled=true",
+		"spring.liquibase.contexts=demo",
 		"app.workers-enabled=false",
-		"app.demo-seed=false",
-		"app.encryption-key=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+		"app.demo-mode=false",
+		"app.webhook-trusted-hosts=demo-receiver",
+		"app.encryption-key=AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA=",
 		"server.tomcat.accesslog.enabled=false"
 	})
 public abstract class IntegrationTest {

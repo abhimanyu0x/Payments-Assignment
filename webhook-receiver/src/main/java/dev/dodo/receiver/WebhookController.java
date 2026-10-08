@@ -2,6 +2,8 @@ package dev.dodo.receiver;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import jakarta.servlet.http.HttpServletRequest;
+import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Map;
@@ -14,7 +16,6 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.util.StringUtils;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
-import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RestController;
 
@@ -32,8 +33,11 @@ public class WebhookController {
 		@RequestHeader(value = "X-Webhook-Id", required = false) String id,
 		@RequestHeader(value = "X-Webhook-Timestamp", required = false) String timestamp,
 		@RequestHeader(value = "X-Webhook-Signature", required = false) String signature,
-		@RequestBody(required = false) byte[] body) {
-		if (Objects.nonNull(body) && body.length > properties.maxBodySize().toBytes()) return ResponseEntity.status(413).body(Map.of("error", "payload_too_large"));
+		HttpServletRequest request) throws IOException {
+		long limit = properties.maxBodySize().toBytes();
+		if (request.getContentLengthLong() > limit) return tooLarge();
+		byte[] body = request.getInputStream().readNBytes(Math.toIntExact(limit + 1));
+		if (body.length > limit) return tooLarge();
 		if (!verifier.verify(body, timestamp, signature)) return invalid();
 		JsonNode event;
 		UUID eventId;
@@ -67,6 +71,10 @@ public class WebhookController {
 		} catch (Exception e) {
 			throw new IllegalStateException("Stored payload is not JSON", e);
 		}
+	}
+
+	private static ResponseEntity<Map<String, Object>> tooLarge() {
+		return ResponseEntity.status(413).body(Map.of("error", "payload_too_large"));
 	}
 
 	private static ResponseEntity<Map<String, Object>> invalid() {

@@ -50,6 +50,7 @@ import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
 @TestPropertySource(properties = {
 	"app.psp-timeout=150ms",
 	"app.payment-lease=0s",
+	"app.payment-review-interval=0s",
 	"app.payment-retry-delays=0s,0s,0s,0s,0s,0s"
 })
 class PaymentIntegrationTest extends IntegrationTest {
@@ -274,26 +275,34 @@ class PaymentIntegrationTest extends IntegrationTest {
 	}
 
 	@Test
-	void exhaustedRecoveryStaysUnknownAndBlocksNewCharge() throws Exception {
+	void exhaustedRecoveryIsFlaggedThenSettledByLookupWithoutCharging() throws Exception {
 		String invoice = invoice();
 		assertEquals(202, pay(invoice, token("tok_timeout"), key()).statusCode());
 		for (int round = 0; round <= 6; round++) {
 			var claim = attempts.claim().orElseThrow();
 			service.finish(claim, PaymentProcessorClient.Result.unknown("psp_transport_error"));
 		}
-		assertTrue(attempts.claim().isEmpty());
-		var attempt = history(invoice).get(0);
-		assertEquals("unknown", attempt.get("status").asText());
-		assertTrue(attempt.get("review_required").asBoolean());
+		var flagged = history(invoice).get(0);
+		assertEquals("unknown", flagged.get("status").asText());
+		assertTrue(flagged.get("review_required").asBoolean());
 		assertEquals("payment_in_progress", errorCode(pay(invoice, SUCCESS, key())));
-		assertEquals("open", invoiceState(invoice));
+		var review = attempts.claim().orElseThrow();
+		assertTrue(review.isReviewRequired());
+		service.finish(review, processor.execute(review));
+		var settled = history(invoice).get(0);
+		assertEquals("failed", settled.get("status").asText());
+		assertEquals("processor_error", settled.get("failure_code").asText());
 		assertEquals(0, psp.posts.get());
+		assertEquals("open", invoiceState(invoice));
+		assertTrue(attempts.claim().isEmpty());
+		assertEquals(202, pay(invoice, SUCCESS, key()).statusCode());
 	}
 
 	@Test
 	void otherTenantCannotSeeOrPayAndRevokedKeyIsRejected() throws Exception {
 		var other = businesses.save(BusinessEntity.builder().name("Other").build());
 		assertEquals(7, other.getId().version());
+		assertThrows(IllegalArgumentException.class, () -> apiKeys.issue(UUID.fromString(key())));
 		var otherKey = apiKeys.issue(other.getId());
 		String otherApiKey = otherKey.apiKey();
 		String invoice = invoice();
@@ -344,6 +353,8 @@ class PaymentIntegrationTest extends IntegrationTest {
 		assertEquals(400, raw("POST", "/api/v1/customers", null, "{\"name\":\"a\",\"name\":\"b\",\"email\":\"x@example.com\"}").statusCode());
 		var oversizedKey = client.send(HttpRequest.newBuilder(uri("/api/v1/customers")).header("Authorization", "Bearer demo." + "x".repeat(300)).build(), HttpResponse.BodyHandlers.ofString());
 		assertEquals(401, oversizedKey.statusCode());
+		var lowercaseScheme = client.send(HttpRequest.newBuilder(uri("/api/v1/customers")).header("Authorization", "bearer " + KEY).build(), HttpResponse.BodyHandlers.ofString());
+		assertEquals(200, lowercaseScheme.statusCode());
 		assertEquals(401, anonymous("/actuator/env").statusCode());
 		var health = anonymous("/actuator/health");
 		assertEquals(200, health.statusCode());
@@ -459,6 +470,9 @@ class PaymentIntegrationTest extends IntegrationTest {
 		var big = request("/customers", Map.of("name", "x".repeat(100_000), "email", "x@example.com"));
 		assertEquals(413, big.statusCode());
 		assertEquals("request_too_large", errorCode(big));
+		var justOver = raw("POST", "/api/v1/customers", null, "x".repeat(64 * 1024 + 1));
+		assertEquals(413, justOver.statusCode());
+		assertEquals(justOver.headers().firstValue("X-Request-Id").orElseThrow(), JSON.readTree(justOver.body()).path("error").path("request_id").asText());
 		for (String limit : List.of("0", "101", "abc")) {
 			var page = request("/customers?limit=" + limit, null);
 			assertEquals(422, page.statusCode(), limit);
@@ -478,5 +492,53 @@ class PaymentIntegrationTest extends IntegrationTest {
 		assertEquals(4, seen.size());
 		assertEquals(seen.stream().sorted(Comparator.reverseOrder()).toList(), seen);
 		assertEquals(400, request("/invoices?cursor=" + first.get("next_cursor").asText(), null).statusCode());
+	}
+
+	@Test
+	void webhookEndpointsMustBePublicHttpsUniqueAndCanBeDeactivated() throws Exception {
+		for (String url : List.of("http://example.com/hooks", "https://127.0.0.1/hooks", "https://10.0.0.5/hooks", "https://169.254.169.254/latest", "https://[::1]/hooks", "https://user:secret@93.184.216.34/hooks", "ftp://93.184.216.34/hooks", "https://[64:ff9b::7f00:1]/hooks", "https://no-such-host.invalid/hooks")) {
+			var rejected = request("/webhook-endpoints", Map.of("url", url));
+			assertEquals(422, rejected.statusCode(), url);
+			assertEquals(Messages.WEBHOOK_ADDRESS_NOT_ALLOWED, JSON.readTree(rejected.body()).path("error").path("message").asText());
+		}
+		var created = request("/webhook-endpoints", Map.of("url", "https://93.184.216.34/hooks"));
+		assertEquals(201, created.statusCode(), created.body());
+		String id = JSON.readTree(created.body()).get("id").asText();
+		var duplicate = request("/webhook-endpoints", Map.of("url", "HTTPS://93.184.216.34/hooks"));
+		assertEquals(409, duplicate.statusCode());
+		assertEquals("webhook_endpoint_exists", errorCode(duplicate));
+		var deactivated = request("/webhook-endpoints/" + id + "/deactivate", Map.of());
+		assertEquals(200, deactivated.statusCode());
+		assertFalse(JSON.readTree(deactivated.body()).get("active").asBoolean());
+		var again = request("/webhook-endpoints", Map.of("url", "https://93.184.216.34/hooks"));
+		assertEquals(201, again.statusCode());
+		assertEquals(200, request("/webhook-endpoints/" + JSON.readTree(again.body()).get("id").asText() + "/deactivate", Map.of()).statusCode());
+	}
+
+	@Test
+	void overdueAttemptNeverSentIsFlaggedThenChargedExactlyOnce() throws Exception {
+		UUID invoice = UUID.fromString(invoice());
+		var now = Instant.now();
+		var overdue = attempts.save(PaymentAttemptEntity.builder()
+			.businessId(DEMO_BUSINESS)
+			.invoiceId(invoice)
+			.idempotencyKey(key())
+			.requestFingerprint("fingerprint")
+			.mockCardToken("tok_timeout")
+			.amountCents(5000)
+			.nextAttemptAt(now.plusSeconds(3600))
+			.recoveryDeadlineAt(now.minusSeconds(1))
+			.build());
+		attempts.flagOverdue();
+		var flagged = get("/payment-attempts/" + overdue.getId());
+		assertEquals("unknown", flagged.get("status").asText());
+		assertTrue(flagged.get("review_required").asBoolean());
+		assertEquals("recovery_budget_exhausted", flagged.get("last_error_code").asText());
+		var review = attempts.claim().orElseThrow();
+		assertEquals(overdue.getId(), review.getId());
+		service.finish(review, processor.execute(review));
+		assertEquals("succeeded", get("/payment-attempts/" + overdue.getId()).get("status").asText());
+		assertEquals(1, psp.posts.get());
+		assertEquals("paid", invoiceState(invoice.toString()));
 	}
 }

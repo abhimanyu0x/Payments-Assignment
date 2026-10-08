@@ -104,9 +104,9 @@ public class PaymentService {
 			}
 			default -> {
 				int round = current.getReconciliationRoundCount();
-				boolean exhausted = round >= app.paymentRetryDelays().size() || current.getRecoveryDeadlineAt().isBefore(now);
+				boolean exhausted = current.isReviewRequired() || round >= app.paymentRetryDelays().size() || current.getRecoveryDeadlineAt().isBefore(now);
 				String error = Objects.requireNonNullElse(result.failure(), "confirmation_pending");
-				current.defer(error, now.plus(app.paymentRetryDelay(round)), exhausted);
+				current.defer(error, now.plus(exhausted ? app.paymentReviewInterval() : app.paymentRetryDelay(round)), exhausted);
 			}
 		}
 	}

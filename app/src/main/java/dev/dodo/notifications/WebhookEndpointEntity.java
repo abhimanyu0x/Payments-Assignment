@@ -40,4 +40,8 @@ public class WebhookEndpointEntity {
 	@CreatedDate
 	@Column(name = "created_at", nullable = false)
 	private Instant createdAt;
+
+	void deactivate() {
+		active = false;
+	}
 }

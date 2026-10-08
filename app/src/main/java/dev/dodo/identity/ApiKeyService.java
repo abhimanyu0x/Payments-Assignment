@@ -6,6 +6,7 @@ import java.time.Instant;
 import java.util.Base64;
 import java.util.UUID;
 import lombok.RequiredArgsConstructor;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.security.crypto.keygen.BytesKeyGenerator;
 import org.springframework.security.crypto.keygen.KeyGenerators;
 import org.springframework.stereotype.Service;
@@ -26,7 +27,12 @@ public class ApiKeyService {
 	public IssuedKey issue(UUID business) {
 		String prefix = encode(PREFIXES.generateKey());
 		String secret = encode(SECRETS.generateKey());
-		var key = keys.save(ApiKeyEntity.builder().businessId(business).keyPrefix(prefix).secretHash(Sha256.hex(secret)).build());
+		ApiKeyEntity key;
+		try {
+			key = keys.saveAndFlush(ApiKeyEntity.builder().businessId(business).keyPrefix(prefix).secretHash(Sha256.hex(secret)).build());
+		} catch (DataIntegrityViolationException e) {
+			throw new IllegalArgumentException("Unknown business " + business, e);
+		}
 		return new IssuedKey(key.getId(), prefix + "." + secret);
 	}
 

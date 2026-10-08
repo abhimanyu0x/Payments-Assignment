@@ -3,7 +3,7 @@
         xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
         xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog https://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-4.31.xsd">
-    <changeSet id="20261008082658188" author="Abhimanyu">
+    <changeSet id="20261008082658188" author="Abhimanyu" context="demo">
         <insert schemaName="identity" tableName="businesses">
             <column name="id" value="01a11810-ce4f-76f3-9863-cbf7566684b5"/>
             <column name="name" value="Demo Business"/>

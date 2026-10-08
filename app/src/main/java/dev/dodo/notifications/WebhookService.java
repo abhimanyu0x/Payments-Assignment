@@ -5,13 +5,13 @@ import dev.dodo.common.Messages;
 import dev.dodo.common.Page;
 import dev.dodo.common.PageQuery;
 import dev.dodo.common.Pages;
-import dev.dodo.configuration.AppProperties;
 import java.util.Base64;
-import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
 import lombok.RequiredArgsConstructor;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
 @Service
@@ -26,15 +26,28 @@ public class WebhookService {
 	private final EventRepository events;
 	private final WebhookEvents envelopes;
 	private final SecretCipher cipher;
-	private final AppProperties app;
+	private final WebhookUrlPolicy policy;
 	private final Pages pages;
 
-	@Transactional
+	@Transactional(propagation = Propagation.NOT_SUPPORTED)
 	public RegisteredWebhookEndpoint register(UUID business, String url) {
-		if (!Objects.equals(app.webhookUrl(), url)) throw ApiError.invalid(Messages.WEBHOOK_ADDRESS_NOT_ALLOWED);
+		if (policy.check(url.strip()) != WebhookUrlPolicy.Verdict.ALLOWED) throw ApiError.invalid(Messages.WEBHOOK_ADDRESS_NOT_ALLOWED);
+		String address = WebhookUrlPolicy.normalize(url.strip());
+		if (endpoints.existsByBusinessIdAndUrlAndActiveTrue(business, address)) throw ApiError.conflict("webhook_endpoint_exists", Messages.WEBHOOK_ADDRESS_EXISTS);
 		byte[] secret = cipher.generate();
-		var endpoint = endpoints.save(WebhookEndpointEntity.builder().businessId(business).url(url).secretCiphertext(cipher.encrypt(secret)).build());
-		return new RegisteredWebhookEndpoint(endpoint.getId(), url, Base64.getEncoder().encodeToString(secret), endpoint.isActive());
+		try {
+			var endpoint = endpoints.saveAndFlush(WebhookEndpointEntity.builder().businessId(business).url(address).secretCiphertext(cipher.encrypt(secret)).build());
+			return new RegisteredWebhookEndpoint(endpoint.getId(), address, Base64.getEncoder().encodeToString(secret), endpoint.isActive());
+		} catch (DataIntegrityViolationException e) {
+			throw ApiError.conflict("webhook_endpoint_exists", Messages.WEBHOOK_ADDRESS_EXISTS);
+		}
+	}
+
+	@Transactional
+	public WebhookEndpoint deactivate(UUID business, UUID id) {
+		var endpoint = endpoints.findByBusinessIdAndId(business, id).orElseThrow(ApiError::missing);
+		endpoint.deactivate();
+		return WebhookEndpoint.from(endpoint);
 	}
 
 	public WebhookEndpoint endpoint(UUID business, UUID id) {

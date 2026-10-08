@@ -1,5 +1,6 @@
 server:
   port: ${PORT:8080}
+  forward-headers-strategy: native
   max-http-request-header-size: 8KB
   error:
     include-stacktrace: never
@@ -46,6 +47,7 @@ spring:
   liquibase:
     enabled: ${MIGRATE:false}
     change-log: classpath:db/changelog/db.changelog-master.xml
+    contexts: ${LIQUIBASE_CONTEXTS:default}
   jackson:
     property-naming-strategy: SNAKE_CASE
     parser:
@@ -82,16 +84,18 @@ management:
 app:
   psp-url: ${PSP_URL:http://mock-psp:8081}
   psp-timeout: ${PSP_TIMEOUT:5s}
-  webhook-url: ${WEBHOOK_URL:http://demo-receiver:8090/webhooks}
   webhook-timeout: ${WEBHOOK_TIMEOUT:5s}
+  webhook-trusted-hosts: ${WEBHOOK_TRUSTED_HOSTS:}
   encryption-key: ${ENCRYPTION_KEY}
-  demo-seed: ${DEMO_SEED:true}
+  demo-mode: ${DEMO_MODE:false}
+  demo-webhook-url: ${DEMO_WEBHOOK_URL:}
   demo-webhook-secret: ${DEMO_WEBHOOK_SECRET:}
   workers-enabled: ${WORKERS_ENABLED:true}
   worker-poll-interval: ${WORKER_POLL_INTERVAL:1s}
   worker-concurrency: ${WORKER_CONCURRENCY:4}
   payment-lease: ${PAYMENT_LEASE:60s}
   payment-recovery: ${PAYMENT_RECOVERY:10m}
+  payment-review-interval: ${PAYMENT_REVIEW_INTERVAL:15m}
   payment-retry-delays: ${PAYMENT_RETRY_DELAYS:5s,10s,20s,40s,60s,120s}
   webhook-max-attempts: ${WEBHOOK_MAX_ATTEMPTS:6}
   webhook-lease: ${WEBHOOK_LEASE:30s}

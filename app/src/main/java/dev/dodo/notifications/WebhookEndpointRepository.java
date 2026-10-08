@@ -9,7 +9,7 @@ import org.springframework.data.querydsl.QuerydslPredicateExecutor;
 public interface WebhookEndpointRepository extends JpaRepository<WebhookEndpointEntity, UUID>, QuerydslPredicateExecutor<WebhookEndpointEntity> {
 	Optional<WebhookEndpointEntity> findByBusinessIdAndId(UUID businessId, UUID id);
 
-	boolean existsByBusinessIdAndUrl(UUID businessId, String url);
+	boolean existsByBusinessIdAndUrlAndActiveTrue(UUID businessId, String url);
 
 	List<WebhookEndpointEntity> findByBusinessIdAndActiveTrue(UUID businessId);
 }

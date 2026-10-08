@@ -130,6 +130,14 @@ class WebhookReceiverTest {
 	}
 
 	@Test
+	void oversizedBodyIsRejectedBeforeVerification() throws Exception {
+		UUID id = UuidV7.generate();
+		long now = Instant.now().getEpochSecond();
+		String body = "x".repeat(70_000);
+		assertEquals(413, deliver(id.toString(), body, now, signed(body, now)).statusCode());
+	}
+
+	@Test
 	void runsOnlyAgainstItsOwnThrowawayDatabase(@Autowired JdbcConnectionDetails connection) {
 		assertEquals(postgres.getJdbcUrl(), connection.getJdbcUrl());
 		assertNotEquals("dodo", postgres.getDatabaseName());

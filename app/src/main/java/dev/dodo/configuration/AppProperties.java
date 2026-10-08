@@ -6,6 +6,7 @@ import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotEmpty;
 import jakarta.validation.constraints.NotNull;
 import java.time.Duration;
+import java.util.Arrays;
 import java.util.Base64;
 import java.util.List;
 import org.springframework.boot.context.properties.ConfigurationProperties;
@@ -18,16 +19,18 @@ import org.springframework.validation.annotation.Validated;
 public record AppProperties(
 	@NotBlank String pspUrl,
 	@NotNull Duration pspTimeout,
-	@NotBlank String webhookUrl,
 	@NotNull Duration webhookTimeout,
+	@NotNull List<String> webhookTrustedHosts,
 	@NotBlank String encryptionKey,
-	boolean demoSeed,
+	boolean demoMode,
+	String demoWebhookUrl,
 	String demoWebhookSecret,
 	boolean workersEnabled,
 	@NotNull Duration workerPollInterval,
 	@Min(1) int workerConcurrency,
 	@NotNull Duration paymentLease,
 	@NotNull Duration paymentRecovery,
+	@NotNull Duration paymentReviewInterval,
 	@NotEmpty List<Duration> paymentRetryDelays,
 	@Min(1) int webhookMaxAttempts,
 	@NotNull Duration webhookLease,
@@ -39,7 +42,7 @@ public record AppProperties(
 	}
 
 	public Duration webhookRetryDelay(int attempt) {
-		return webhookRetryDelays.get(Math.clamp(attempt - 1, 0, webhookRetryDelays.size() - 1));
+		return webhookRetryDelays.get(Math.min(Math.max(attempt - 1, 0), webhookRetryDelays.size() - 1));
 	}
 
 	public byte[] encryptionKeyBytes() {
@@ -55,9 +58,14 @@ public record AppProperties(
 		return isBase64Of32Bytes(encryptionKey);
 	}
 
-	@AssertTrue(message = "app.demo-webhook-secret must be base64 of 32 bytes when app.demo-seed is true")
-	public boolean isDemoWebhookSecretValid() {
-		return !demoSeed || isBase64Of32Bytes(demoWebhookSecret);
+	@AssertTrue(message = "app.encryption-key is the public demo key and is only allowed when app.demo-mode is true")
+	public boolean isEncryptionKeyPrivate() {
+		return demoMode || !isBase64Of32Bytes(encryptionKey) || !Arrays.equals(encryptionKeyBytes(), new byte[32]);
+	}
+
+	@AssertTrue(message = "app.demo-webhook-url and app.demo-webhook-secret (base64 of 32 bytes) are required when app.demo-mode is true")
+	public boolean isDemoSettingsValid() {
+		return !demoMode || StringUtils.hasText(demoWebhookUrl) && isBase64Of32Bytes(demoWebhookSecret);
 	}
 
 	private static boolean isBase64Of32Bytes(String value) {

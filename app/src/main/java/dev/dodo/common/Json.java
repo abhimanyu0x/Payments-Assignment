@@ -16,13 +16,4 @@ public class Json {
 			throw new IllegalStateException("Cannot serialize response", e);
 		}
 	}
-
-	public <T> T read(String value, Class<T> type) {
-		try {
-			return mapper.readValue(value, type);
-		} catch (Exception e) {
-			throw new IllegalStateException("Invalid stored JSON", e);
-		}
-	}
-
 }

@@ -803,6 +803,12 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
           description: Use a valid API key.
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+          description: This webhook address is already registered.
         "413":
           content:
             application/json:
@@ -832,6 +838,55 @@ paths:
   /api/v1/webhook-endpoints/{id}:
     get:
       operationId: getWebhookEndpoint
+      parameters:
+      - in: path
+        name: id
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WebhookEndpoint"
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+          description: We could not read this request.
+        "401":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+          description: Use a valid API key.
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+          description: We could not find this item.
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+          description: Something went wrong. Please try again.
+        "503":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+          description: The service is busy. Please try again.
+      tags:
+      - Webhooks and events
+  /api/v1/webhook-endpoints/{id}/deactivate:
+    post:
+      operationId: deactivateWebhookEndpoint
       parameters:
       - in: path
         name: id

@@ -38,7 +38,8 @@ public final class Messages {
 	public static final String PAYMENT_METHOD_NOT_SUPPORTED = "This payment method is not supported.";
 	public static final String WEBHOOK_ADDRESS_REQUIRED = "Enter a webhook address.";
 	public static final String WEBHOOK_ADDRESS_TOO_LONG = "The webhook address is too long.";
-	public static final String WEBHOOK_ADDRESS_NOT_ALLOWED = "This webhook address is not allowed.";
+	public static final String WEBHOOK_ADDRESS_NOT_ALLOWED = "Use a public HTTPS webhook address.";
+	public static final String WEBHOOK_ADDRESS_EXISTS = "This webhook address is already registered.";
 
 	public static final String PAYMENT_REFERENCE_REQUIRED = "This payment needs a unique reference.";
 	public static final String ALREADY_PAID = "This invoice is already paid.";

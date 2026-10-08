@@ -1,3 +1,8 @@
+x-demo: &demo
+  DEMO_MODE: "true"
+  DEMO_WEBHOOK_URL: http://demo-receiver:8090/webhooks
+  DEMO_WEBHOOK_SECRET: &demo-webhook-secret ${DEMO_WEBHOOK_SECRET:-AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=}
+  ENCRYPTION_KEY: ${ENCRYPTION_KEY:-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=}
 services:
   db:
     image: postgres:18.6-alpine
@@ -5,7 +10,7 @@ services:
     environment:
       POSTGRES_DB: dodo
       POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: local_database_only
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-local_database_only}
     volumes:
       - database:/var/lib/postgresql
       - ./docker/init.sql:/docker-entrypoint-initdb.d/roles.sql:ro
@@ -17,13 +22,13 @@ services:
   migrate:
     build: { context: ., target: app }
     environment:
+      <<: *demo
       DATABASE_URL: jdbc:postgresql://db:5432/dodo
       DATABASE_USER: postgres
-      DATABASE_PASSWORD: local_database_only
-      ENCRYPTION_KEY: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
+      DATABASE_PASSWORD: ${POSTGRES_PASSWORD:-local_database_only}
       MIGRATE: "true"
+      LIQUIBASE_CONTEXTS: demo
       WORKERS_ENABLED: "false"
-      DEMO_SEED: "false"
       ACCESS_LOG_ENABLED: "false"
       SPRING_MAIN_WEB_APPLICATION_TYPE: none
     depends_on:
@@ -32,11 +37,10 @@ services:
     build: { context: ., target: app }
     ports: [ "127.0.0.1:${APP_PORT:-8080}:8080" ]
     environment:
+      <<: *demo
       DATABASE_URL: jdbc:postgresql://db:5432/dodo
       PSP_URL: http://mock-psp:8081
-      WEBHOOK_URL: http://demo-receiver:8090/webhooks
-      ENCRYPTION_KEY: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
-      DEMO_WEBHOOK_SECRET: &demo-webhook-secret AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=
+      WEBHOOK_TRUSTED_HOSTS: demo-receiver
     depends_on:
       migrate: { condition: service_completed_successfully }
       mock-psp: { condition: service_healthy }

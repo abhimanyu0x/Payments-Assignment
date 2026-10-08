@@ -36,13 +36,13 @@ public class Errors extends ResponseEntityExceptionHandler {
 
 	@ExceptionHandler(DataAccessException.class)
 	ResponseEntity<Object> database(DataAccessException e) {
-		log.error("database_failure type={}", e.getClass().getSimpleName());
+		log.error("database_failure type={}", e.getClass().getSimpleName(), e);
 		return errors.entity(503, "temporarily_unavailable", Messages.SERVICE_BUSY);
 	}
 
 	@ExceptionHandler(Exception.class)
 	ResponseEntity<Object> unexpected(Exception e) {
-		log.error("unexpected_failure type={}", e.getClass().getSimpleName());
+		log.error("unexpected_failure type={}", e.getClass().getSimpleName(), e);
 		return errors.entity(500, "internal_error", Messages.UNEXPECTED);
 	}
 
@@ -61,7 +61,7 @@ public class Errors extends ResponseEntityExceptionHandler {
 
 	@Override
 	protected ResponseEntity<Object> handleExceptionInternal(Exception e, Object body, HttpHeaders headers, HttpStatusCode status, WebRequest request) {
-		var reply = switch (HttpStatus.valueOf(status.value())) {
+		var reply = switch (Objects.requireNonNullElse(HttpStatus.resolve(status.value()), HttpStatus.INTERNAL_SERVER_ERROR)) {
 			case BAD_REQUEST -> errors.body("invalid_request", e instanceof TypeMismatchException ? Messages.VALUE_INVALID : Messages.REQUEST_UNREADABLE);
 			case NOT_FOUND -> errors.body("not_found", Messages.NOT_FOUND);
 			case METHOD_NOT_ALLOWED -> errors.body("method_not_allowed", Messages.ACTION_NOT_ALLOWED);

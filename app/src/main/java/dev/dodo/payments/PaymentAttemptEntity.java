@@ -86,6 +86,7 @@ public class PaymentAttemptEntity {
 		completedAt = now;
 		leaseExpiresAt = null;
 		lastErrorCode = null;
+		reviewRequired = false;
 	}
 
 	void defer(String error, Instant retryAt, boolean exhausted) {

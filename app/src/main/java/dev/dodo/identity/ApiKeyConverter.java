@@ -18,7 +18,7 @@ class ApiKeyConverter implements AuthenticationConverter {
 	public Authentication convert(HttpServletRequest request) {
 		String header = request.getHeader(HttpHeaders.AUTHORIZATION);
 		if (!StringUtils.hasText(header)) return null;
-		if (header.length() > MAX_HEADER_LENGTH || !header.startsWith(BEARER)) throw new BadCredentialsException("Malformed authorization header");
+		if (header.length() > MAX_HEADER_LENGTH || !header.regionMatches(true, 0, BEARER, 0, BEARER.length())) throw new BadCredentialsException("Malformed authorization header");
 		String[] key = header.substring(BEARER.length()).split("\\.", 2);
 		boolean wellFormed = key.length == 2
 			&& StringUtils.hasText(key[0]) && key[0].length() <= MAX_PREFIX_LENGTH

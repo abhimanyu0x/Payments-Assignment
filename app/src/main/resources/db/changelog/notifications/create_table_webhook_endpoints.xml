@@ -31,4 +31,13 @@
             <column name="business_id"/>
         </createIndex>
     </changeSet>
+    <changeSet id="20261008145406512" author="Abhimanyu">
+        <createIndex schemaName="notifications" tableName="webhook_endpoints" indexName="one_active_endpoint_per_url" unique="true">
+            <column name="business_id"/>
+            <column name="url"/>
+        </createIndex>
+        <modifySql dbms="postgresql">
+            <append value=" WHERE active"/>
+        </modifySql>
+    </changeSet>
 </databaseChangeLog>

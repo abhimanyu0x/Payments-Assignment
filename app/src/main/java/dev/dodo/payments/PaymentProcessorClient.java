@@ -6,14 +6,19 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Component;
 import org.springframework.util.StringUtils;
 import org.springframework.web.client.RestClient;
+import org.springframework.web.client.RestClientException;
 
+@Slf4j
 @Component
 @RequiredArgsConstructor
 public class PaymentProcessorClient {
+	static final String NEVER_REACHED_PROCESSOR = "processor_error";
+
 	public record Result(PaymentStatus status, String reference, String failure) {
 		public static Result unknown(String reason) {
 			return new Result(PaymentStatus.UNKNOWN, null, reason);
@@ -36,11 +41,16 @@ public class PaymentProcessorClient {
 			if (claim.getClaimVersion() > 1) {
 				var lookup = call(claim, psp.get().uri("/payments/{id}", claim.getId()));
 				if (lookup.isPresent()) return lookup.get();
+				if (claim.isReviewRequired()) return new Result(PaymentStatus.FAILED, null, NEVER_REACHED_PROCESSOR);
 			}
 			var charge = new Charge(claim.getId(), claim.getAmountCents(), Money.CURRENCY, claim.getMockCardToken());
 			return call(claim, psp.post().uri("/payments").body(charge)).orElse(Result.unknown("psp_http_404"));
-		} catch (Exception e) {
+		} catch (RestClientException e) {
+			log.warn("psp_call_failed attempt_id={} type={}", claim.getId(), e.getClass().getSimpleName());
 			return Result.unknown("psp_transport_error");
+		} catch (RuntimeException e) {
+			log.error("psp_call_error attempt_id={} type={}", claim.getId(), e.getClass().getSimpleName(), e);
+			return Result.unknown("psp_client_error");
 		}
 	}
 

@@ -77,6 +77,8 @@ const blockLabels: Record<string, string> = {
     invoice_already_paid: "This invoice is already paid.",
     payment_in_progress: "A payment for this invoice is still in progress.",
 };
+const QUANTITY = /^\d{1,5}$/;
+const CENTS = /^\d{1,13}$/;
 const label = (labels: Record<string, string>, value: unknown, fallback: string) =>
     labels[String(value)] ?? fallback;
 const shortId = (value: unknown) => String(value ?? "").slice(-8);
@@ -230,6 +232,8 @@ function App() {
                                 className="text-button"
                                 onClick={() => {
                                     requestVersion.current++;
+                                    setSelected(null);
+                                    setModal(null);
                                     setKey("");
                                     setKeyInput("");
                                     setError("");
@@ -530,13 +534,20 @@ function CreateForm({
     useEffect(() => {
         if (kind === "invoice") {
             let active = true;
-            api<Page>("/customers?limit=100")
-                .then((p) => {
-                    if (active) setCustomers(p.data);
-                })
-                .catch((e) => {
-                    if (active) setError(e.message);
-                });
+            (async () => {
+                const all: Row[] = [];
+                let cursor: string | null = null;
+                do {
+                    const params = new URLSearchParams({limit: "100"});
+                    if (cursor) params.set("cursor", cursor);
+                    const page: Page = await api<Page>(`/customers?${params}`);
+                    all.push(...page.data);
+                    cursor = page.next_cursor;
+                } while (cursor && active);
+                if (active) setCustomers(all);
+            })().catch((e) => {
+                if (active) setError((e as Error).message);
+            });
             return () => {
                 active = false;
             };
@@ -565,6 +576,8 @@ function CreateForm({
                 );
                 setSecret(result.signing_secret);
             } else {
+                if (items.some((i) => !QUANTITY.test(i.quantity) || !CENTS.test(i.amount)))
+                    throw new Error("Use whole numbers for quantity and price.");
                 await api("/invoices", {
                     method: "POST",
                     body: JSON.stringify({
@@ -572,8 +585,8 @@ function CreateForm({
                         due_date: form.get("date"),
                         items: items.map((i) => ({
                             description: i.description,
-                            quantity: i.quantity === "" ? null : Number(i.quantity),
-                            unit_amount_cents: i.amount === "" ? null : Number(i.amount),
+                            quantity: Number.parseInt(i.quantity, 10),
+                            unit_amount_cents: Number.parseInt(i.amount, 10),
                         })),
                     }),
                 });
@@ -612,13 +625,14 @@ function CreateForm({
             ) : kind === "endpoint" ? (
                 <>
                     <p>
-                        Only the demo webhook address can be used here.
+                        Use a public HTTPS address. The demo receiver is already registered.
                     </p>
                     <label>
                         Endpoint URL
                         <input
                             name="url"
-                            defaultValue="http://demo-receiver:8090/webhooks"
+                            type="url"
+                            placeholder="https://example.com/webhooks"
                         />
                     </label>
                 </>
@@ -634,9 +648,6 @@ function CreateForm({
                                 </option>
                             ))}
                         </select>
-                        <small>
-                            Shows up to 100 customers.
-                        </small>
                     </label>
                     <label>
                         Due date
@@ -684,6 +695,9 @@ function CreateForm({
                                     Quantity
                                     <input
                                         type="number"
+                                        min={1}
+                                        step={1}
+                                        inputMode="numeric"
                                         value={item.quantity}
                                         onChange={(e) =>
                                             setItems((v) =>
@@ -700,6 +714,9 @@ function CreateForm({
                                     Unit price in cents
                                     <input
                                         type="number"
+                                        min={0}
+                                        step={1}
+                                        inputMode="numeric"
                                         value={item.amount}
                                         onChange={(e) =>
                                             setItems((v) =>
@@ -755,6 +772,7 @@ function InvoiceDetail({id, api}: { id: string; api: Api }) {
     const [webhooks, setWebhooks] = useState<Row[]>([]);
     const [token, setToken] = useState("tok_success");
     const [error, setError] = useState("");
+    const [loadError, setLoadError] = useState("");
     const [busy, setBusy] = useState(false);
     const [accepted, setAccepted] = useState(false);
     const payment = useRef<{ key: string; token: string } | null>(null);
@@ -773,9 +791,10 @@ function InvoiceDetail({id, api}: { id: string; api: Api }) {
                     setInvoice(i);
                     setAttempts(a.data);
                     setWebhooks(w.data);
+                    setLoadError("");
                 }
             } catch (e) {
-                if (active) setError((e as Error).message);
+                if (active) setLoadError((e as Error).message);
             } finally {
                 if (active) timer = setTimeout(refresh, 2000);
             }
@@ -807,8 +826,9 @@ function InvoiceDetail({id, api}: { id: string; api: Api }) {
     }
 
     if (!invoice)
-        return <div className="form-body">{error || "Loading"}</div>;
+        return <div className="form-body">{loadError || "Loading"}</div>;
     const actions = invoice.allowed_actions as string[];
+    const canPay = actions?.includes("pay") || (payment.current !== null && invoice.state !== "paid");
     return (
         <div className="form-body">
             <div className="invoice-summary">
@@ -834,7 +854,7 @@ function InvoiceDetail({id, api}: { id: string; api: Api }) {
                 ))}
             </div>
             <h3>Payment</h3>
-            <label hidden={!actions?.includes("pay") && !payment.current}>
+            <label hidden={!canPay}>
                 Test payment method
                 <select
                     value={token}
@@ -848,7 +868,7 @@ function InvoiceDetail({id, api}: { id: string; api: Api }) {
                     <option value="tok_network_error">Payment provider error</option>
                 </select>
             </label>
-            {actions?.includes("pay") || payment.current ? (
+            {canPay ? (
                 <button
                     className="primary full"
                     disabled={busy}
@@ -884,9 +904,9 @@ function InvoiceDetail({id, api}: { id: string; api: Api }) {
                     Start a new payment
                 </button>
             ) : null}
-            {error ? (
+            {error || loadError ? (
                 <p className="error" role="alert">
-                    {error}
+                    {error || loadError}
                 </p>
             ) : null}
             <h3>Payment history</h3>
@@ -900,7 +920,7 @@ function InvoiceDetail({id, api}: { id: string; api: Api }) {
                                 <p>{label(failureLabels, a.failure_code, "The payment failed.")}</p>
                             ) : null}
                             {a.review_required ? (
-                                <p>This payment needs a manual check. Do not pay again.</p>
+                                <p>This payment is taking longer than usual. We keep checking with the payment provider.</p>
                             ) : a.status === "unknown" ? (
                                 <p>We are still confirming this payment.</p>
                             ) : null}

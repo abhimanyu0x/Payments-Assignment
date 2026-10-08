@@ -1,8 +1,12 @@
 package dev.dodo.notifications;
 
+import dev.dodo.common.ErrorResponse;
 import dev.dodo.common.Messages;
 import dev.dodo.common.Page;
 import dev.dodo.common.PageQuery;
+import io.swagger.v3.oas.annotations.media.Content;
+import io.swagger.v3.oas.annotations.media.Schema;
+import io.swagger.v3.oas.annotations.responses.ApiResponse;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
@@ -35,6 +39,7 @@ public class WebhookController {
 
 	@PostMapping("/webhook-endpoints")
 	@ResponseStatus(HttpStatus.CREATED)
+	@ApiResponse(responseCode = "409", description = Messages.WEBHOOK_ADDRESS_EXISTS, content = @Content(schema = @Schema(implementation = ErrorResponse.class)))
 	public ResponseEntity<RegisteredWebhookEndpoint> registerWebhookEndpoint(@AuthenticationPrincipal UUID business, @Valid @RequestBody NewWebhookEndpoint body) {
 		var endpoint = service.register(business, body.url());
 		return ResponseEntity.created(URI.create("/api/v1/webhook-endpoints/" + endpoint.id())).body(endpoint);
@@ -43,6 +48,11 @@ public class WebhookController {
 	@GetMapping("/webhook-endpoints/{id}")
 	public WebhookEndpoint getWebhookEndpoint(@AuthenticationPrincipal UUID business, @PathVariable UUID id) {
 		return service.endpoint(business, id);
+	}
+
+	@PostMapping("/webhook-endpoints/{id}/deactivate")
+	public WebhookEndpoint deactivateWebhookEndpoint(@AuthenticationPrincipal UUID business, @PathVariable UUID id) {
+		return service.deactivate(business, id);
 	}
 
 	@GetMapping("/webhook-endpoints")

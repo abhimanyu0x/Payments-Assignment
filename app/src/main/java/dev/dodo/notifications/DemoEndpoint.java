@@ -3,15 +3,19 @@ package dev.dodo.notifications;
 import dev.dodo.configuration.AppProperties;
 import java.util.UUID;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.boot.ApplicationArguments;
 import org.springframework.boot.ApplicationRunner;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplication;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Component;
-import org.springframework.transaction.annotation.Transactional;
 
+@Slf4j
 @Component
 @RequiredArgsConstructor
-@ConditionalOnProperty(name = "app.demo-seed", havingValue = "true")
+@ConditionalOnWebApplication
+@ConditionalOnProperty(name = "app.demo-mode", havingValue = "true")
 public class DemoEndpoint implements ApplicationRunner {
 	static final UUID BUSINESS_ID = UUID.fromString("01a11810-ce4f-76f3-9863-cbf7566684b5");
 	private final WebhookEndpointRepository endpoints;
@@ -19,9 +23,12 @@ public class DemoEndpoint implements ApplicationRunner {
 	private final AppProperties app;
 
 	@Override
-	@Transactional
 	public void run(ApplicationArguments args) {
-		if (endpoints.existsByBusinessIdAndUrl(BUSINESS_ID, app.webhookUrl())) return;
-		endpoints.save(WebhookEndpointEntity.builder().businessId(BUSINESS_ID).url(app.webhookUrl()).secretCiphertext(cipher.encrypt(app.demoWebhookSecretBytes())).build());
+		if (endpoints.existsByBusinessIdAndUrlAndActiveTrue(BUSINESS_ID, app.demoWebhookUrl())) return;
+		try {
+			endpoints.saveAndFlush(WebhookEndpointEntity.builder().businessId(BUSINESS_ID).url(app.demoWebhookUrl()).secretCiphertext(cipher.encrypt(app.demoWebhookSecretBytes())).build());
+		} catch (DataIntegrityViolationException e) {
+			log.info("demo_endpoint_already_registered");
+		}
 	}
 }

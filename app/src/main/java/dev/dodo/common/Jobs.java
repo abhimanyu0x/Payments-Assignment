@@ -26,7 +26,7 @@ public class Jobs {
 			try {
 				job = claim.get();
 			} catch (RuntimeException e) {
-				log.warn("job_claim_failed job={} type={}", name, e.getClass().getSimpleName());
+				log.warn("job_claim_failed job={} type={}", name, e.getClass().getSimpleName(), e);
 				return;
 			}
 			if (job.isEmpty()) return;
@@ -46,7 +46,7 @@ public class Jobs {
 				log.info("job_done job={} id={}", name, id);
 			});
 		} catch (RuntimeException e) {
-			log.warn("job_incomplete job={} id={} type={}", name, id, e.getClass().getSimpleName());
+			log.warn("job_incomplete job={} id={} type={}", name, id, e.getClass().getSimpleName(), e);
 		}
 	}
 }
