@@ -1,127 +1,129 @@
-# Invoice and Payment Service — Design
+# Invoice and Payment Service
 
-Java 21 / Spring Boot instead of Rust: the author knows Java well enough to own and explain it; the brief permits this with justification.
-
-## 0. Architecture and request flow
-
-- **app** — a modular monolith. Packages `identity`, `customers`, `billing`, `payments`, `notifications` each own one PostgreSQL schema, use Spring Data JPA repositories (QueryDSL for claims), and call each other through Java interfaces, never HTTP.
-- **mock-psp** — a separate process with its own schema and database role; the app reaches it only over HTTP.
-- **demo-receiver** — a Java signature-verifying webhook receiver. The optional `ui` frontend is out-of-scope, removable.
-
-Flow: `POST /pay` → short transaction (lock invoice, insert `pending` attempt) → worker claims the attempt → PSP call **outside** any transaction → one transaction updates attempt, invoice, event and delivery rows → webhook worker signs and POSTs.
-
-Why not HTTP between modules: invoice state, attempt outcome and webhook event must commit together. Across services that becomes a saga with new partial-failure states. Replicas scale horizontally: coordination lives in PostgreSQL (row locks, unique constraints, `SKIP LOCKED`). Extract services only when measured.
+I chose Java and Spring Boot for familiarity. The modular monolith uses Java interfaces and separate PostgreSQL schemas. Invoice, payment and event changes commit together. HTTP connects processors and webhook receivers.
 
 ## 1. Data Model
 
-```mermaid
-erDiagram
- BUSINESS ||--o{ API_KEY : authenticates
- BUSINESS ||--o{ CUSTOMER : owns
- BUSINESS ||--o{ INVOICE : issues
- CUSTOMER ||--o{ INVOICE : receives
- INVOICE ||--|{ INVOICE_ITEM : contains
- INVOICE ||--o{ PAYMENT_ATTEMPT : records
- BUSINESS ||--o{ ENDPOINT : registers
- BUSINESS ||--o{ EVENT : owns
- EVENT ||--o{ DELIVERY : produces
- ENDPOINT ||--o{ DELIVERY : receives
-```
+Businesses own customers and invoices. Invoices have items and attempts. Events produce endpoint deliveries.
 
-Primary keys default to PostgreSQL 18 `uuidv7()`: time-ordered, index-local; access relies on tenant scoping, not secrecy. Liquibase XML keeps one changelog per table. Money is `bigint` cents / Java `long` with `Math.multiplyExact/addExact`; JSON decimals and numeric strings are rejected; only the server computes totals (max 10^12 cents). Tenant-composite foreign keys `(business_id, id)` block cross-business references. No cascading deletes of financial history.
+Unless stated otherwise, primary keys are PostgreSQL-generated UUIDv7 `id` values, improving index locality over random UUIDs. Queries use authenticated `business_id`. Composite foreign keys enforce tenant-consistent invoice/customer, attempt/invoice and delivery/event/endpoint links.
 
-| Table | Shape / indexes | Why; at 100× |
-|---|---|---|
-| identity.api_keys | unique prefix, SHA-256 hash, revoked_at | Several keys per business for rotation; add a short-TTL auth cache |
-| customers.customers | business, name, email; (business, created, id) | Cursor pagination; email intentionally not unique |
-| billing.invoices | state, total, due date, paid_at; (business, created) and (business, state, created) | Immutable amount once issued; CHECK ties `paid` to `paid_at` |
-| billing.invoice_items | position, quantity, unit cents | Normalised; line totals not stored |
-| payments.payment_attempts | key, fingerprint, token, status, lease, claim_version, retry counters; unique (business, key); partial unique "one unresolved" and "one succeeded" per invoice; partial due index | Durable work queue and history in one row; partition by time and archive resolved rows |
-| notifications.events | type, source, invoice, data; unique (business, type, source) | Written in the business transaction; dedupes repeated finalisation |
-| notifications.webhook_deliveries | attempts, lease, deadline; unique (event, endpoint); partial due index | Independent retries per endpoint |
-| mock_psp.operations | caller operation ID (PK), fingerprint, result, completion time | Models provider-side deduplication |
+Tenant means `business_id`. List indexes end with descending `created_at, id`. Uniqueness creates indexes.
 
-Billing learns of unresolved payments through a Java interface, never by reading another schema.
+| Table | Main fields and indexes | Reason for shape | At 100x |
+|---|---|---|---|
+| `identity.businesses` | Name, creation time. Primary key only. | Avoid repeated tenant details. | Keep small. |
+| `identity.api_keys` | Tenant, prefix, hash, revoked time. Unique prefix. | Allow overlapping keys during rotation. | Cache only with reliable revocation. |
+| `customers.customers` | Tenant, name, email. Unique tenant/ID. Tenant list index. | Reuse customer details across invoices. | Scale list reads. |
+| `billing.invoices` | Tenant, customer, state, USD total, due date, paid time. Unique tenant/ID. Tenant and tenant/state list indexes. | Preserve the issued total. | Separate reporting reads. |
+| `billing.invoice_items` | Invoice, position, description, quantity, unit cents. Unique invoice/position. | Rows enforce ordering and limits. | Archive with invoices. |
+| `payments.payment_attempts` | Tenant, invoice, key, fingerprint, token, amount, outcome, lease, version, counters, deadlines. Unique tenant/key and tenant/ID. Invoice list index. Partial unique unresolved/successful indexes per invoice. Partial due index excludes review rows. | Restartable work and attempt history. | Index review scheduling. Preserve deduplication when archiving. |
+| `notifications.events` | Tenant, type, source, invoice, JSON data as text. Unique tenant/type/source and tenant/ID. Tenant list and tenant/invoice indexes. | Stored snapshots survive receiver downtime. | Archive older events. |
+| `notifications.webhook_endpoints` | Tenant, URL, encrypted secret, active flag. Unique tenant/ID. Tenant index. Unique active tenant/URL. | Separate configuration from delivery history. | Bound endpoints per tenant. |
+| `notifications.webhook_deliveries` | Tenant, event, endpoint, invoice, type, status, count, lease, version, HTTP result, deadline. Unique event/endpoint. Tenant and tenant/invoice list indexes. Partial pending-due index. | Independent retries per destination. | Archive finished rows. Limit endpoint concurrency. |
+| `mock_psp.operations` | PK is supplied attempt UUID. Fingerprint, amount, currency, token, outcome, completion time, POST count. Partial pending-completion index. | Durable deduplication replaces process memory. | Preserve IDs throughout retries. |
+| `demo_receiver.received_events` | PK is supplied event UUID. Type, payload, receipt time. Receipt-time index. | Uniqueness deduplicates receipt. | Retain deduplication beyond replay windows. |
 
-## 2. State Machines
+Liquibase tracks migrations. Modules share one app role. Processor and receiver roles are separate.
+
+Money uses `long` and `bigint` cents. Checked arithmetic rejects overflow. Only the server calculates totals, bounded from 1 to 10^12 cents.
+
+At 100x, measure database load, queues and lock waits. Scale APIs and workers independently. Partitioning must preserve uniqueness. Capacity is unproven.
+
+## 2. Invoice State Machine
 
 ```mermaid
 stateDiagram-v2
- [*] --> open: POST /invoices
- open --> paid: attempt confirmed succeeded
- open --> open: attempt confirmed failed
- paid --> [*]
+    [*] --> open: Create invoice
+    open --> open: Payment accepted or unresolved
+    open --> open: Payment confirmed failed
+    open --> paid: Payment confirmed succeeded
+    paid --> [*]: Terminal
 ```
 
-`open` is initial; `paid` is terminal and irreversible. Outcome uncertainty lives on the attempt:
+`open` means unpaid. Pending or unknown attempts block payment. Failure permits another attempt. Due dates cause no transition. `paid` is irreversible. Self-loops preserve state.
 
 ```mermaid
 stateDiagram-v2
- [*] --> pending: POST /pay accepted (202)
- pending --> succeeded: PSP confirms
- pending --> failed: PSP declines
- pending --> unknown: timeout, 5xx, connection error
- unknown --> succeeded: lookup confirms
- unknown --> failed: lookup confirms
- unknown --> unknown: still pending; retry 5–120 s, then review every 15 min
- succeeded --> [*]
- failed --> [*]
+    [*] --> pending: Accept payment
+    pending --> succeeded: Processor confirms success
+    pending --> failed: Processor confirms failure
+    pending --> unknown: Timeout or error or overdue recovery
+    unknown --> unknown: Unresolved or review scheduled
+    unknown --> succeeded: Recovery confirms success
+    unknown --> failed: Confirm failure or review lookup returns 404
+    succeeded --> [*]: Terminal
+    failed --> [*]: Terminal
 ```
 
-Invalid transitions are rejected under the invoice row lock: paying a paid invoice → `409 invoice_already_paid`; paying while an attempt is pending/unknown → `409 payment_in_progress`. `markPaid` runs under that lock and asserts `open`; CHECK constraints bound the states. Draft, void and uncollectible were cut: nothing required triggers them.
+`review_required` flags unknown attempts. Terminal outcomes cannot reverse. Retries never restore pending.
+
+`PaymentService.accept` checks eligibility under the invoice lock. Invalid requests return `409 payment_in_progress` or `409 invoice_already_paid`. There is no arbitrary state-update API. Finalization checks unresolved status and claim version. Database checks restrict states and completion timestamps.
 
 ## 3. Payment Correctness & Failure Modes
 
-Mechanism: **row-level lock** (`SELECT … FOR UPDATE` on the invoice) plus **unique constraints** and **status-conditional updates with a claim version**. In-memory locks do not coordinate replicas; advisory locks add a second lock namespace; optimistic or SERIALIZABLE retries push retry loops onto callers for a rarely contended row.
+Payment requests use `POST /api/v1/invoices/{id}/pay`.
 
-**(a) Concurrent requests.** Different keys serialise on the invoice row: one inserts a `pending` attempt and returns 202; the rest see it and get 409. The partial unique index "one unresolved attempt per invoice" backs this up. The same key racing on two invoices hits the unique (business, key) constraint; the loser rolls back, re-reads and gets `idempotency_key_conflict`. Tested with 20 concurrent clients: one 202, one PSP call.
+PostgreSQL row-level locks through JPA `PESSIMISTIC_WRITE` coordinate replicas; unique constraints provide backup. In-memory locks cannot coordinate replicas. Advisory locks add conventions. Optimistic locking and serializable isolation add retries. HTTP runs outside transactions.
 
-**(b) PSP timeout.** The endpoint already returned 202 in milliseconds. The worker's PSP call has a 5-second deadline; on timeout the attempt becomes `unknown` (never `failed`); the invoice stays `open` but blocked. Reconciliation GETs the same operation after 5, 10, 20, 40, 60, 120 s; the mock completes at 30 s, so the attempt becomes `succeeded`, the invoice `paid`, and `invoice.paid` is sent. Callers poll the attempt or await the webhook. After six rounds or ten minutes it is flagged `review_required` and re-checked every 15 minutes: a PSP result settles it; no PSP record means no charge, so it fails and the invoice is payable.
+### (a) Simultaneous payment requests
 
-**(c) Success, then crash before persisting.** The attempt was committed before the call, with a 60-second lease. After expiry another worker reclaims it (claim_version increments, so a stale worker's late write is ignored) and **looks up the same operation ID** (the attempt UUID). The PSP returns the original success; no new charge. If the PSP never saw it (404), the identical operation is re-POSTed and deduplicated by ID. This relies on the mock's deduplication and lookup, mirroring real providers' idempotency keys.
+Different keys serialize on the invoice lock. One saves pending work and returns 202. The other gets 409 while that work remains unresolved or after success. If failure finishes before the second locks, another attempt is allowed. Same-key identical requests return 202 but share one attempt. Cross-invoice key races hit unique tenant/key; the loser rolls back and rereads the key.
 
-**(d) Same key, different body.** The stored fingerprint covers invoice and token; a mismatch returns `409 idempotency_key_conflict`. Only accepted requests reserve keys.
+### (b) Processor timeout
 
-**(e) Paid invoice, another POST.** Same key and body: the original 202 is replayed (no PSP call). New key: `409 invoice_already_paid`.
+Acceptance saves pending work and returns 202 with `payment_attempt_id` and `status_url`. The worker uses a 5-second read timeout and 1-second connection timeout. Timeout changes the attempt to unknown. The invoice stays open but blocked.
 
-`tok_network_error` returns 500; the app treats it as `unknown` until lookup confirms `failed/processor_error`; the invoice stays open and payable with a new key.
+Lookup retries follow delays of 5, 10, 20, 40, 60 and 120 seconds. The mock completes after 30 seconds; a later lookup marks the attempt succeeded and invoice paid. Poll `status_url` with the API key or receive `invoice.paid`.
+
+After six recovery rounds or ten minutes, unresolved work gets `review_required` and checks every 15 minutes. Previously claimed attempts only look up during review; a 404 becomes failed. Never-claimed attempts may make their first POST. This depends on mock lookup; real providers may have ambiguous absence.
+
+### (c) Crash after processor success
+
+The attempt commits before the processor call. After lease expiry at 60 seconds, another worker claims and looks up the same attempt UUID. Stored success settles it without another charge. Client retries with the original key replay acceptance.
+
+Before review mode, lookup 404 permits a POST with the same operation ID. The mock deduplicates that ID. Claim versions reject stale workers' database writes. Attempt outcome, invoice state and webhook records commit together or all roll back. Duplicate-charge protection depends on durable processor deduplication, not the invoice lock alone.
+
+### (d) Key reused with different body
+
+SHA-256 fingerprints the payment operation, invoice ID and parsed token. A changed valid request returns `409 idempotency_key_conflict`. Whitespace does not change meaning. Keys are business-scoped and only accepted requests reserve them.
+
+### (e) Paying a paid invoice
+
+An unused key gets `409 invoice_already_paid`. The original key and body replay the original 202 body, including pending status, without calling the processor. Polling gives the current outcome. A conflicting existing key gets the key-conflict error.
+
+`tok_network_error` returns 500, initially meaning unknown. The mock stores `processor_error`; lookup confirms failure and releases the payment block. A 500 alone never proves failure. Lookup and durable deduplication are explicit mock extensions.
 
 ## 4. Webhook Design
 
-Events and delivery rows are written in the state change's transaction (transactional outbox), so a committed payment cannot lose its notification. Workers claim due rows with `SKIP LOCKED` and a 30-second lease; HTTP never runs inside a transaction or on the request path.
+`WebhookEvents.record` saves `invoice.created`, `invoice.paid` or `invoice.payment_failed` and delivery rows with the business transaction. This outbox preserves committed events. Workers use `SKIP LOCKED`, 30-second leases and claim versions. Sending after commit keeps receiver downtime off the API response path.
 
-Signing: HMAC-SHA256 over `timestamp + "." + exact body bytes`, sent as `X-Webhook-Signature: v1=<hex>`, with `X-Webhook-Timestamp` and `X-Webhook-Id` (the event ID, also inside the signed body). Receivers compare in constant time, reject timestamps more than 300 s old (replay protection) and deduplicate on event ID. Each retry is freshly signed.
+HMAC-SHA256 signs `timestamp + "." + exact UTF-8 body`. Headers include `X-Webhook-Timestamp`, `X-Webhook-Id` and `X-Webhook-Signature: v1=<hex>`. Retries get fresh signatures. Receivers compare signatures in constant time, reject timestamps outside 300 seconds either way, check the signed event ID and deduplicate it.
 
-Retries: six attempts — immediately, then 5 s, 30 s, 2 min, 10 min, 30 min after each failure (about 43 min), 5-second timeout per attempt, no redirects, one-hour hard deadline. Exhausted deliveries stay visible; businesses reconcile via `GET /events`. Delivery is at-least-once and unordered.
+Six attempts are allowed: immediate, then 5, 30, 120, 600 and 1800 seconds after failures. Waits total 42 minutes 35 seconds, excluding execution and scheduling. Read timeout is 5 seconds; connection timeout 1 second. A one-hour deadline stops new sends. Claims consume attempts even if workers crash before sending. Non-2xx and transport failures retry.
 
-Secrets are 32 random bytes, returned once, AES-GCM-encrypted at rest with a key outside the database. Only public HTTPS URLs register; private, loopback and metadata addresses are refused at registration and before each delivery. One active endpoint per URL; deactivating one stops its deliveries.
+Exhausted rows remain at `/api/v1/webhook-deliveries`. Businesses page through `/api/v1/events`, deduplicate IDs and fetch invoices to reconcile. Creation-time pagination is not a gap-free stream. There is no replay API. Delivery can repeat or arrive unordered.
+
+32-byte signing secrets are returned once, encrypted with AES-GCM using an external key. HTTPS destinations are checked before registration and delivery; trusted demo hosts may use HTTP. Redirects are disabled. DNS checks do not pin connection addresses.
 
 ## 5. API Key Model
 
-Format `prefix.secret` with a 256-bit random secret. Only its SHA-256 is stored (fast hashing suffices for high-entropy secrets); lookup by indexed prefix, constant-time comparison. Bearer header only; production needs TLS. An operator CLI creates and revokes keys; rotation = create second key, switch clients, revoke the first. Revocation applies immediately. A leaked key exposes one business; keys are never logged.
+Keys combine a random 12-byte prefix and 32-byte secret as `prefix.secret`. Store the prefix, SHA-256 secret hash, tenant and revocation time, never the full key. High entropy justifies fast hashing. Requests check revocation and compare hashes in constant time.
 
-## 6. What Was Cut and Why
+Transmit through `Authorization: Bearer` over production HTTPS. CLI prints keys once. Rotate by creating another, switching clients and revoking the old key. Authenticated work may finish. A leak grants all supported business actions; narrower scopes are absent.
 
-- Draft/void/uncollectible invoices: no required trigger; `void` is the natural next addition.
-- Refunds and partial payments: need ledger-style accounting, not a status flag.
-- Broker, Redis, sagas: PostgreSQL queues and local transactions suffice.
-- Production rate limiting: per-business token buckets at the gateway, discussed not built.
-- Webhook replay and in-place secret rotation (register a new endpoint, deactivate the old).
+## 6. What I Cut and Why
 
-The optional UI (built on request) holds no business rules.
+- Draft, void and uncollectible states lack required workflows.
+- Refunds and partial payments need additional accounting rules.
+- Subscriptions, taxes and currencies beyond USD exceed scope.
+- Internal HTTP and sagas were considered, then dropped to preserve local atomicity.
+- Webhook replay and in-place secret rotation need separate controls.
+
+Optional UI exceeds scope.
 
 ## 7. Production Readiness Gap
 
-1. Observability: UUIDv7 trace IDs link logs across services. Missing: trace export; alerts on queue age, `review_required` attempts and exhausted deliveries.
-2. Security: TLS, managed secrets, an egress proxy for webhooks, per-business rate limits.
-3. A real PSP contract (idempotency retention, lookup, settlement reconciliation) and load-tested capacity.
-
-## 8. Scaling to 100× (plan, not measured)
-
-No load test has been run.
-
-1. Measure acceptance p99, queue age, lock waits, pool saturation.
-2. Stateless API replicas; workers deployed separately (same image, `WORKERS_ENABLED`) and sized independently.
-3. PgBouncer, read replicas for lists/events, time-partitioning or archiving of attempts, events and deliveries.
-4. Locks are per invoice, so contention does not grow with tenants; tenant data is keyed by `business_id`, enabling sharding by business.
-5. If polling latency matters, wake workers via LISTEN/NOTIFY or a broker (outbox stays authoritative); cap per-endpoint webhook concurrency.
+1. Real processor integration. Define idempotency retention, ambiguous lookup handling and settlement reconciliation before accepting real money.
+2. Security and capacity controls. Add managed secrets, TLS, rate limits, controlled webhook egress and load testing.
+3. Operations. Export existing traces, alert on old queues and review flags, and add an operator audit trail and recovery procedures.
