@@ -8,7 +8,7 @@ Open DESIGN.md. Show app, PostgreSQL schemas, HTTP mock PSP, and webhook receive
 
 ## Live demo — 2 to 3 minutes
 
-From a clean checkout run `docker compose --profile demo up` (explain that plain `docker compose up` starts the required core). Show migrations and API startup. Use README examples or `python3 scripts/smoke.py` to create a customer and invoices. Demonstrate successful payment on one invoice and tok_card_declined on another. Show attempt GET, invoice state, and signed deliveries in `docker compose logs demo-receiver`. The UI is optional, not required for this segment.
+From a clean checkout run `docker compose up`. It starts PostgreSQL 18, the Liquibase migration job, the mock PSP, the app and the Java demo webhook receiver. Show the migrate container finishing before the app starts. Optionally open `app/src/main/resources/db/changelog/` to show one changelog per table. Use the README curl examples (or the optional UI) to create a customer and invoices. Demonstrate successful payment on one invoice and tok_card_declined on another. Show attempt GET, invoice state, `GET /webhook-deliveries?invoice_id=…`, and the verified events in `docker compose logs demo-receiver` (or http://localhost:8090/events). In the optional UI, open the invoice to show its Webhooks section. The UI is optional, not required for this segment.
 
 ## State machine — 1 to 2 minutes, unscripted
 
@@ -27,4 +27,4 @@ Explain what survives a restart and why a lease is not sufficient to prevent dup
 
 ## Before sharing
 
-Run all Docker-dependent tests; check VERIFICATION.md. Replace README's pending video entry with the accessible link. Open the link in a signed-out browser. Re-read AI_USAGE.md and keep only accurate claims. Ensure DESIGN.md stays within roughly 800–1500 words. Do not claim hidden UI scope or unexecuted tests as completed evaluation work.
+Re-run `docker compose --profile tests run --rm tests` and, with the stack up, `docker compose --profile e2e run --rm e2e` yourself; no local JDK is needed. Check VERIFICATION.md. Replace README's pending video entry with the accessible link. Open the link in a signed-out browser. Re-read AI_USAGE.md and keep only accurate claims. Ensure DESIGN.md stays within roughly 800–1500 words. Do not claim hidden UI scope or unexecuted tests as completed evaluation work.

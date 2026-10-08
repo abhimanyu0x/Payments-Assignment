@@ -10,7 +10,7 @@ Java 21 / Spring Boot instead of Rust: the author knows Java well enough to own 
 
 Flow: `POST /pay` → short transaction (lock invoice, insert `pending` attempt) → worker claims the attempt → PSP call **outside** any transaction → one transaction updates attempt, invoice, event and delivery rows → webhook worker signs and POSTs.
 
-Why not HTTP between modules: invoice state, attempt outcome and webhook event must commit together. In one process that is one local transaction; across services it becomes a saga with new partial-failure states and no benefit at this size. The only distributed boundary is the PSP, handled by durable attempts and reconciliation. Replicas scale horizontally because coordination lives in PostgreSQL (row locks, unique constraints, `SKIP LOCKED`), not memory. Extract services only when measured.
+Why not HTTP between modules: invoice state, attempt outcome and webhook event must commit together. Across services that becomes a saga with new partial-failure states. Replicas scale horizontally: coordination lives in PostgreSQL (row locks, unique constraints, `SKIP LOCKED`). Extract services only when measured.
 
 ## 1. Data Model
 
@@ -41,7 +41,7 @@ Primary keys default to PostgreSQL 18 `uuidv7()`: time-ordered, index-local; acc
 | notifications.webhook_deliveries | attempts, lease, deadline; unique (event, endpoint); partial due index | Independent retries per endpoint |
 | mock_psp.operations | caller operation ID (PK), fingerprint, result, completion time | Models provider-side deduplication |
 
-Billing learns about unresolved payments through a Java interface the payments module implements, never by reading another schema.
+Billing learns of unresolved payments through a Java interface, never by reading another schema.
 
 ## 2. State Machines
 
@@ -63,12 +63,12 @@ stateDiagram-v2
  pending --> unknown: timeout, 5xx, connection error
  unknown --> succeeded: lookup confirms
  unknown --> failed: lookup confirms
- unknown --> unknown: still pending; retry 5–120 s, then review_required
+ unknown --> unknown: still pending; retry 5–120 s, then review every 15 min
  succeeded --> [*]
  failed --> [*]
 ```
 
-Invalid transitions are rejected under the invoice row lock: paying a paid invoice → `409 invoice_already_paid`; paying while an attempt is pending/unknown → `409 payment_in_progress`. `markPaid` is `UPDATE … WHERE state='open'`, and a CHECK constraint bounds the states. Draft, void and uncollectible were cut: nothing required triggers them.
+Invalid transitions are rejected under the invoice row lock: paying a paid invoice → `409 invoice_already_paid`; paying while an attempt is pending/unknown → `409 payment_in_progress`. `markPaid` runs under that lock and asserts `open`; CHECK constraints bound the states. Draft, void and uncollectible were cut: nothing required triggers them.
 
 ## 3. Payment Correctness & Failure Modes
 
@@ -76,9 +76,9 @@ Mechanism: **row-level lock** (`SELECT … FOR UPDATE` on the invoice) plus **un
 
 **(a) Concurrent requests.** Different keys serialise on the invoice row: one inserts a `pending` attempt and returns 202; the rest see it and get 409. The partial unique index "one unresolved attempt per invoice" backs this up. The same key racing on two invoices hits the unique (business, key) constraint; the loser rolls back, re-reads and gets `idempotency_key_conflict`. Tested with 20 concurrent clients: one 202, one PSP call.
 
-**(b) PSP timeout.** The endpoint already returned 202 in milliseconds. The worker's PSP call has a 5-second deadline; on timeout the attempt becomes `unknown` (never `failed`); the invoice stays `open` but blocked. Reconciliation GETs the same operation after 5, 10, 20, 40, 60, 120 s; the mock completes at 30 s, so the attempt becomes `succeeded`, the invoice `paid`, and `invoice.paid` is sent. Callers poll the attempt or await the webhook. After six rounds or ten minutes it stays `unknown` with `review_required`, still blocking another charge.
+**(b) PSP timeout.** The endpoint already returned 202 in milliseconds. The worker's PSP call has a 5-second deadline; on timeout the attempt becomes `unknown` (never `failed`); the invoice stays `open` but blocked. Reconciliation GETs the same operation after 5, 10, 20, 40, 60, 120 s; the mock completes at 30 s, so the attempt becomes `succeeded`, the invoice `paid`, and `invoice.paid` is sent. Callers poll the attempt or await the webhook. After six rounds or ten minutes it is flagged `review_required` and re-checked every 15 minutes: a PSP result settles it; no PSP record means no charge, so it fails and the invoice is payable.
 
-**(c) Success, then crash before persisting.** The attempt was committed before the call, with a 60-second lease. After expiry another worker reclaims it (claim_version increments, so a stale worker's late write is ignored) and **looks up the same operation ID** (the attempt UUID). The PSP returns the original success; no new charge. If the PSP never saw it (404), the identical operation is re-POSTed and deduplicated by ID. This relies on the mock's durable deduplication and lookup, an explicit extension mirroring real providers' idempotency keys.
+**(c) Success, then crash before persisting.** The attempt was committed before the call, with a 60-second lease. After expiry another worker reclaims it (claim_version increments, so a stale worker's late write is ignored) and **looks up the same operation ID** (the attempt UUID). The PSP returns the original success; no new charge. If the PSP never saw it (404), the identical operation is re-POSTed and deduplicated by ID. This relies on the mock's deduplication and lookup, mirroring real providers' idempotency keys.
 
 **(d) Same key, different body.** The stored fingerprint covers invoice and token; a mismatch returns `409 idempotency_key_conflict`. Only accepted requests reserve keys.
 
@@ -92,13 +92,13 @@ Events and delivery rows are written in the state change's transaction (transact
 
 Signing: HMAC-SHA256 over `timestamp + "." + exact body bytes`, sent as `X-Webhook-Signature: v1=<hex>`, with `X-Webhook-Timestamp` and `X-Webhook-Id` (the event ID, also inside the signed body). Receivers compare in constant time, reject timestamps more than 300 s old (replay protection) and deduplicate on event ID. Each retry is freshly signed.
 
-Retries: six attempts — immediately, then 5 s, 30 s, 2 min, 10 min, 30 min after each failure (about 43 min), 5-second timeout per attempt, no redirects, one-hour hard deadline. Exhausted deliveries stay visible; businesses reconcile via `GET /events` and invoice state. Delivery is at-least-once and unordered.
+Retries: six attempts — immediately, then 5 s, 30 s, 2 min, 10 min, 30 min after each failure (about 43 min), 5-second timeout per attempt, no redirects, one-hour hard deadline. Exhausted deliveries stay visible; businesses reconcile via `GET /events`. Delivery is at-least-once and unordered.
 
-Secrets are 32 random bytes, returned once, AES-GCM-encrypted at rest with a key outside the database. Registration is limited to the configured receiver URL (no general SSRF defence yet).
+Secrets are 32 random bytes, returned once, AES-GCM-encrypted at rest with a key outside the database. Only public HTTPS URLs register; private, loopback and metadata addresses are refused at registration and before each delivery. One active endpoint per URL; deactivating one stops its deliveries.
 
 ## 5. API Key Model
 
-Format `prefix.secret` with a 256-bit random secret. Only its SHA-256 is stored (fast hashing suffices for high-entropy secrets); lookup by indexed prefix, constant-time comparison. Bearer header only; production needs TLS. An operator CLI creates and revokes keys; rotation = create second key, switch clients, revoke the first. Revocation applies to the next request. A leaked key exposes one business. Keys never appear in logs.
+Format `prefix.secret` with a 256-bit random secret. Only its SHA-256 is stored (fast hashing suffices for high-entropy secrets); lookup by indexed prefix, constant-time comparison. Bearer header only; production needs TLS. An operator CLI creates and revokes keys; rotation = create second key, switch clients, revoke the first. Revocation applies immediately. A leaked key exposes one business; keys are never logged.
 
 ## 6. What Was Cut and Why
 
@@ -106,14 +106,14 @@ Format `prefix.secret` with a 256-bit random secret. Only its SHA-256 is stored 
 - Refunds and partial payments: need ledger-style accounting, not a status flag.
 - Broker, Redis, sagas: PostgreSQL queues and local transactions suffice.
 - Production rate limiting: per-business token buckets at the gateway, discussed not built.
-- Webhook replay UI and secret rotation.
+- Webhook replay and in-place secret rotation (register a new endpoint, deactivate the old).
 
 The optional UI (built on request) holds no business rules.
 
 ## 7. Production Readiness Gap
 
-1. Observability: UUIDv7 trace IDs link logs across services. Missing: trace export, alerts on queue age, `unknown` attempts, exhausted deliveries; audited review handling.
-2. Security: TLS, managed secrets, egress-controlled webhook URLs, per-business rate limits.
+1. Observability: UUIDv7 trace IDs link logs across services. Missing: trace export; alerts on queue age, `review_required` attempts and exhausted deliveries.
+2. Security: TLS, managed secrets, an egress proxy for webhooks, per-business rate limits.
 3. A real PSP contract (idempotency retention, lookup, settlement reconciliation) and load-tested capacity.
 
 ## 8. Scaling to 100× (plan, not measured)

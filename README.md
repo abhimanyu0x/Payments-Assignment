@@ -30,7 +30,7 @@ This builds the three Java services (app, mock PSP, webhook receiver) and starts
 
 The mock PSP is not published to the host. All published ports bind to `127.0.0.1` only. Change them with `APP_PORT`, `RECEIVER_PORT`, `UI_PORT` and `DB_PORT`.
 
-Seeded local-only values (from `db/changelog/data/insert_demo_business.xml` and `DemoEndpoint.java`):
+Seeded local-only values. They exist only in demo mode: Compose sets `DEMO_MODE=true` and runs migrations with `LIQUIBASE_CONTEXTS=demo`. Outside demo mode neither the demo business nor its key is created (from `db/changelog/data/insert_demo_business.xml`, context `demo`, and `DemoEndpoint.java`):
 
 - Business `01a11810-ce4f-76f3-9863-cbf7566684b5`, API key `demo.local-demo-secret-change-for-real-use`
 - Webhook endpoint `http://demo-receiver:8090/webhooks`, signed with `DEMO_WEBHOOK_SECRET` from `docker-compose.yml` (the receiver gets the same value as `WEBHOOK_SECRET`)
@@ -152,12 +152,12 @@ docker compose --profile tests run --rm tests
 
 That uses the official Maven and JDK 21 image with your checkout mounted. It needs the Docker socket so Testcontainers can start `postgres:18.6-alpine` and apply the real Liquibase changelogs. It also rewrites `openapi.yaml` in your checkout. With JDK 21+ installed, `./mvnw -B clean test` does the same. The suite fails rather than skips when Docker is missing.
 
-30 tests across the modules:
+36 tests across the modules:
 
-- 18 PostgreSQL integration tests in `PaymentIntegrationTest`, including security hardening, UUIDv7 ordering, enum wire values, per-invoice webhook results, plain error messages, the database rules, UUIDv7 trace IDs, the body size limit, page size checks and cursors
+- 20 PostgreSQL integration tests in `PaymentIntegrationTest`, including security hardening, UUIDv7 ordering, enum wire values, per-invoice webhook results, plain error messages, the database rules, UUIDv7 trace IDs, the body size limit, page size checks and cursors, review settlement without a charge, an overdue never-sent attempt charged exactly once, and webhook endpoint rules (public HTTPS only, no duplicates, deactivation)
 - 2 in `ApiDocumentTest`, which regenerates `openapi.yaml`
-- 5 unit tests (invoice totals, secret encryption and webhook signing)
-- 5 `WebhookReceiverTest` tests for the Java receiver: signature, duplicates, timestamp window and ID mismatch
+- 8 unit tests: invoice totals, secret encryption, webhook signing, and the startup checks that refuse the public demo key outside demo mode
+- 6 `WebhookReceiverTest` tests for the Java receiver: signature, duplicates, timestamp window, ID mismatch and the body size limit
 
 **Tests use the application, not SQL.** No test contains a SQL query or uses `JdbcTemplate`.
 
@@ -217,7 +217,7 @@ Authentication is a bearer API key only, built from standard Spring Security par
 **API key handling**
 - Key hashes are compared in constant time, and unknown key prefixes cost the same as wrong secrets.
 - If the key lookup itself fails (database down), the answer is `503`, not `401`.
-- The `Authorization` header is limited to 256 characters.
+- The `Authorization` header is limited to 256 characters; the `Bearer` scheme name is case-insensitive, as HTTP specifies.
 - A `401` includes `WWW-Authenticate: Bearer`.
 
 **Cross-origin requests**
@@ -230,19 +230,25 @@ Authentication is a bearer API key only, built from standard Spring Security par
 **Response headers**
 - Content-Security-Policy: `default-src 'none'` for the API, and a self-only policy for Swagger UI.
 - `X-Frame-Options: DENY`, `nosniff`, `Referrer-Policy: no-referrer`, a restrictive `Permissions-Policy`, same-origin opener and resource policies, and `Cache-Control: no-store`.
-- HSTS (one year, subdomains, preload) is sent on HTTPS requests.
+- HSTS (one year, subdomains, preload) is sent on HTTPS requests. Behind a TLS-terminating proxy the app trusts `X-Forwarded-Proto`/`X-Forwarded-For` from private-network proxies only (`server.forward-headers-strategy: native`), so HSTS and client IPs stay correct.
 
 **Input limits**
-- Request bodies are limited to about 64 KB (`app.max-request-size`, enforced by Jackson's `maxDocumentLength`, answered with `413`), and headers to 8 KB, with a 10-second connection timeout. Jackson checks the limit as it reads input buffers, so a body can run up to one 8 KB buffer past the limit before it is rejected.
+- Request bodies are limited to 64 KB (`app.max-request-size`, answered with `413`). A declared `Content-Length` over the limit is rejected before authentication or parsing; a chunked body without a length is stopped by Jackson's `maxDocumentLength` while it is read. Headers are limited to 8 KB, with a 10-second connection timeout.
 - JSON with duplicate keys, unknown fields, floats-as-integers or numeric strings is rejected.
 
 **Errors**
 - Error responses never include stack traces, exception names or framework messages.
 
 **Secrets**
-- There is no built-in encryption key: the app will not start without `ENCRYPTION_KEY` (32 bytes, base64). Compose supplies a local-only value.
-- When running the app outside Docker (IntelliJ, `java -jar`), set it yourself, e.g. `ENCRYPTION_KEY=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=` for local use only.
+- There is no built-in encryption key: the app will not start without `ENCRYPTION_KEY` (32 bytes, base64). Compose supplies the public all-zero demo key, which the app refuses unless `DEMO_MODE=true`.
+- When running the app outside Docker (IntelliJ, `java -jar`), set your own key, e.g. from `openssl rand -base64 32`.
 - No key, secret or generated password is ever logged.
+
+**Webhook endpoints**
+- A business registers any public `https://` URL. Private, loopback, link-local, carrier-grade NAT and metadata addresses (for example `169.254.169.254`) are refused with `422`, and the check runs again before every delivery, so a DNS change cannot point an endpoint at an internal service. Redirects are never followed.
+- If a host cannot be resolved at registration the URL is refused; if it stops resolving later, the delivery is retried on the normal schedule (`dns_error`) instead of being dropped. The DNS lookup at registration runs outside any database transaction.
+- Hosts in `WEBHOOK_TRUSTED_HOSTS` (comma-separated, case-insensitive) skip the address check and may use `http://`. Compose trusts only `demo-receiver`.
+- One active endpoint per URL per business (`409 webhook_endpoint_exists` otherwise). URLs are stored with a lowercase scheme and host, so `HTTPS://Example.com/x` and `https://example.com/x` count as the same address. `POST /webhook-endpoints/{id}/deactivate` stops future and pending deliveries; to rotate a secret, register the URL again after deactivating, or register a new URL first.
 
 **Optional**
 - Set `API_DOCS_ENABLED=false` to turn off Swagger UI and `/v3/api-docs`.
@@ -293,15 +299,16 @@ Non-secret settings are under `app.*` in `app/src/main/resources/application.yml
 
 Times are durations such as `150ms`, `5s` or `10m`; sizes are data sizes such as `64KB`.
 
-- `PSP_URL`, `PSP_TIMEOUT`, `WEBHOOK_URL`, `WEBHOOK_TIMEOUT`
-- `PAYMENT_LEASE`, `PAYMENT_RECOVERY`, `PAYMENT_RETRY_DELAYS`
+- `PSP_URL`, `PSP_TIMEOUT`, `WEBHOOK_TIMEOUT`, `WEBHOOK_TRUSTED_HOSTS`
+- `PAYMENT_LEASE`, `PAYMENT_RECOVERY`, `PAYMENT_RETRY_DELAYS`, `PAYMENT_REVIEW_INTERVAL`
 - `WEBHOOK_MAX_ATTEMPTS`, `WEBHOOK_LEASE`, `WEBHOOK_DELIVERY_BUDGET`, `WEBHOOK_RETRY_DELAYS`
 - `WORKERS_ENABLED`, `WORKER_POLL_INTERVAL`, `WORKER_CONCURRENCY`
-- `MAX_REQUEST_SIZE`, `ACCESS_LOG_ENABLED`, `DEMO_SEED`, `API_DOCS_ENABLED`
+- `MAX_REQUEST_SIZE`, `ACCESS_LOG_ENABLED`, `API_DOCS_ENABLED`
+- `DEMO_MODE`, `DEMO_WEBHOOK_URL`, `DEMO_WEBHOOK_SECRET`, `LIQUIBASE_CONTEXTS` (demo stack only)
 
 The encryption key and the demo webhook secret are checked at startup (base64 of 32 bytes), so a bad value stops the app with a clear message. Shared HTTP client settings (`spring.http.client.*`: JDK client, 1-second connect timeout, no redirects) apply to both outgoing clients; each client sets only its own read timeout.
 
-To run the app from IntelliJ or `java -jar` instead of Docker, set at least `ENCRYPTION_KEY`, plus `DEMO_WEBHOOK_SECRET` while `DEMO_SEED` is true.
+To run the app from IntelliJ or `java -jar` instead of Docker, set at least your own `ENCRYPTION_KEY`. To get the demo business and key locally, also set `DEMO_MODE=true`, `DEMO_WEBHOOK_URL`, `DEMO_WEBHOOK_SECRET` and, for the migration run, `LIQUIBASE_CONTEXTS=demo`.
 
 Host ports are `APP_PORT`, `RECEIVER_PORT` and `UI_PORT` in `docker-compose.yml`.
 
@@ -350,11 +357,25 @@ There is no public sign-up. An operator creates or revokes keys:
 ```sh
 docker compose run --rm --no-deps app \
   --spring.profiles.active=key-admin --spring.main.web-application-type=none \
-  --app.workers-enabled=false --app.demo-seed=false \
+  --app.workers-enabled=false \
   --operation=create --business-id=01a11810-ce4f-76f3-9863-cbf7566684b5
 ```
 
 The key is printed once. To rotate, create a second key, switch clients, then revoke the old one with `--operation=revoke --key-id=<key id>` (same flags otherwise). Revocation takes effect on the next request.
+
+## Going live
+
+Compose is the local demo stack. For a real deployment, change these and nothing else:
+
+1. **Secrets:** a unique `ENCRYPTION_KEY` (`openssl rand -base64 32`) from a secret manager. Leave `DEMO_MODE` unset (false) and `LIQUIBASE_CONTEXTS` unset (`default`), so no demo business, key or endpoint is created. The app refuses the public demo key outside demo mode.
+2. **Database:** a managed PostgreSQL 18. Run `docker/init.sql` once with your own role passwords (it ships local passwords), point `DATABASE_URL`/`DATABASE_USER`/`DATABASE_PASSWORD` at it, and run the image once with `MIGRATE=true SPRING_MAIN_WEB_APPLICATION_TYPE=none WORKERS_ENABLED=false` as the migration job.
+3. **TLS:** terminate HTTPS at a load balancer or proxy on a private network; the app trusts its forwarded headers and then sends HSTS.
+4. **Processor:** set `PSP_URL` to the real processor and review `PSP_TIMEOUT`.
+5. **Keys:** create each business's API key with the `key-admin` command; businesses register their own `https://` webhook endpoints.
+6. **Scale:** run API replicas with `WORKERS_ENABLED=false` and a separate worker deployment with `WORKERS_ENABLED=true` (same image).
+7. **Do not deploy** `mock-psp`, `demo-receiver` or the optional `ui` service.
+
+Known gaps before real traffic (see DESIGN.md §7): rate limiting, trace export and alerting, and a real processor contract.
 
 ## Demo Video
 
