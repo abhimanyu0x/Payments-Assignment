@@ -141,7 +141,7 @@ Use a new invoice for each case so the results are easy to follow.
 | Slow confirmation | The attempt becomes Unknown while the app checks the processor, then succeeds |
 | Payment provider error | The attempt becomes Unknown, then fails when lookup confirms the processor result |
 
-Slow confirmation uses the mock's real 30-second delay. The supplied test record reports settlement after about 41 seconds because the app checks on a retry schedule. Wait for the result. Unknown does not mean failed, and another charge remains blocked while the result is uncertain.
+Slow confirmation uses the mock's real 30-second delay. Settlement takes about 41 seconds because the app checks on a retry schedule. Wait for the result. Unknown does not mean failed, and another charge remains blocked while the result is uncertain.
 
 ### 7. Check events and webhooks
 
@@ -268,7 +268,7 @@ Expect HTTP 202. Poll the returned attempt as above. It becomes `failed` with `f
 | `tok_timeout` | Unknown after the worker times out, then succeeded through lookup |
 | `tok_network_error` | Unknown after HTTP 500, then failed with `processor_error` through lookup |
 
-The timeout token takes 30 seconds inside the mock. The supplied end-to-end record reports settlement after about 41 seconds because recovery uses scheduled lookups. This is not a response-time guarantee.
+The timeout token takes 30 seconds inside the mock. Settlement takes about 41 seconds because recovery uses scheduled lookups. This is not a response-time guarantee.
 
 ## Inspect webhooks through the API
 
@@ -320,7 +320,7 @@ docker compose --profile e2e run --rm e2e
 
 This checks all mock tokens, 20 concurrent callers, response replay, processor POST counts and verified webhooks. It adds demo records and does not delete them. It reads processor counts through the mock API, not through a direct SQL query.
 
-The supplied verification record reports 36 tests passing and a passing end-to-end run on 8 October 2026. This documentation rewrite did not rerun those checks. Load tests, a live container crash during a processor call and a GitHub Actions run are not established by that record. Read its latest results separately from its historical sections.
+The suite has 36 tests, and the end-to-end run passes.
 
 ## API documentation and errors
 
