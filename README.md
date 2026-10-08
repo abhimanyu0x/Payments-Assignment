@@ -2,6 +2,10 @@
 
 Create customers and invoices, try mock payments and see the resulting webhooks. The project includes a backend, PostgreSQL database, mock payment processor, webhook receiver and optional web interface.
 
+## Demo Video
+
+[Watch the demo video on Google Drive](https://drive.google.com/file/d/1Omd0nv8bCmK4SncS10A2koesBhMNKt8J/view?usp=sharing)
+
 ## Tech stack
 
 These are the versions declared in the project files and Docker images. Image tags such as Java 21 and Node 22 do not pin a patch version.
