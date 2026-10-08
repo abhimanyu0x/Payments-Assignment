@@ -1,60 +1,38 @@
 package dev.dodo.notifications;
 
-import java.nio.ByteBuffer;
-import java.security.SecureRandom;
-import java.util.*;
-import javax.crypto.*;
-import javax.crypto.spec.*;
-import org.springframework.beans.factory.annotation.Value;
+import dev.dodo.configuration.AppProperties;
+import java.util.Base64;
+import javax.crypto.spec.SecretKeySpec;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.security.crypto.encrypt.AesBytesEncryptor;
+import org.springframework.security.crypto.encrypt.BytesEncryptor;
+import org.springframework.security.crypto.keygen.BytesKeyGenerator;
+import org.springframework.security.crypto.keygen.KeyGenerators;
 import org.springframework.stereotype.Component;
 
 @Component
 public class SecretCipher {
-  private final byte[] key;
-  private final SecureRandom random = new SecureRandom();
+	private static final BytesKeyGenerator SECRETS = KeyGenerators.secureRandom(32);
+	private final BytesEncryptor encryptor;
 
-  public SecretCipher(@Value("${app.encryption-key}") String encoded) {
-    key = Base64.getDecoder().decode(encoded);
-    if (key.length != 32)
-      throw new IllegalArgumentException("Encryption key must contain 32 bytes.");
-  }
+	@Autowired
+	SecretCipher(AppProperties app) {
+		this(app.encryptionKeyBytes());
+	}
 
-  public byte[] generate() {
-    byte[] secret = new byte[32];
-    random.nextBytes(secret);
-    return secret;
-  }
+	SecretCipher(byte[] key) {
+		encryptor = new AesBytesEncryptor(new SecretKeySpec(key, "AES"), KeyGenerators.secureRandom(12), AesBytesEncryptor.CipherAlgorithm.GCM);
+	}
 
-  public String encrypt(byte[] secret) {
-    try {
-      byte[] nonce = new byte[12];
-      random.nextBytes(nonce);
-      Cipher c = Cipher.getInstance("AES/GCM/NoPadding");
-      c.init(Cipher.ENCRYPT_MODE, new SecretKeySpec(key, "AES"), new GCMParameterSpec(128, nonce));
-      byte[] encrypted = c.doFinal(secret);
-      return Base64.getEncoder()
-          .encodeToString(
-              ByteBuffer.allocate(nonce.length + encrypted.length)
-                  .put(nonce)
-                  .put(encrypted)
-                  .array());
-    } catch (Exception e) {
-      throw new IllegalStateException("Cannot encrypt secret", e);
-    }
-  }
+	public byte[] generate() {
+		return SECRETS.generateKey();
+	}
 
-  public byte[] decrypt(String encoded) {
-    try {
-      byte[] all = Base64.getDecoder().decode(encoded);
-      if (all.length < 28) throw new IllegalArgumentException();
-      Cipher c = Cipher.getInstance("AES/GCM/NoPadding");
-      c.init(
-          Cipher.DECRYPT_MODE,
-          new SecretKeySpec(key, "AES"),
-          new GCMParameterSpec(128, Arrays.copyOfRange(all, 0, 12)));
-      return c.doFinal(Arrays.copyOfRange(all, 12, all.length));
-    } catch (Exception e) {
-      throw new IllegalStateException("Cannot decrypt secret", e);
-    }
-  }
+	public String encrypt(byte[] secret) {
+		return Base64.getEncoder().encodeToString(encryptor.encrypt(secret));
+	}
+
+	public byte[] decrypt(String encoded) {
+		return encryptor.decrypt(Base64.getDecoder().decode(encoded));
+	}
 }

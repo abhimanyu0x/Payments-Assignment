@@ -1,0 +1,77 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<databaseChangeLog
+        xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+        xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+        xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog https://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-4.31.xsd">
+    <changeSet id="20261008082658170" author="Abhimanyu">
+        <createTable schemaName="notifications" tableName="webhook_deliveries">
+            <column name="id" type="uuid" defaultValueComputed="uuidv7()">
+                <constraints primaryKey="true" nullable="false"/>
+            </column>
+            <column name="business_id" type="uuid">
+                <constraints nullable="false"/>
+            </column>
+            <column name="event_id" type="uuid">
+                <constraints nullable="false"/>
+            </column>
+            <column name="endpoint_id" type="uuid">
+                <constraints nullable="false"/>
+            </column>
+            <column name="event_type" type="text">
+                <constraints nullable="false"/>
+            </column>
+            <column name="invoice_id" type="uuid">
+                <constraints nullable="false"/>
+            </column>
+            <column name="status" type="text" defaultValue="pending">
+                <constraints nullable="false"/>
+            </column>
+            <column name="attempt_count" type="integer" defaultValueNumeric="0">
+                <constraints nullable="false"/>
+            </column>
+            <column name="next_attempt_at" type="TIMESTAMP WITH TIME ZONE" defaultValueComputed="now()">
+                <constraints nullable="false"/>
+            </column>
+            <column name="lease_expires_at" type="TIMESTAMP WITH TIME ZONE"/>
+            <column name="claim_version" type="bigint" defaultValueNumeric="0">
+                <constraints nullable="false"/>
+            </column>
+            <column name="last_http_status" type="integer"/>
+            <column name="last_error_code" type="text"/>
+            <column name="created_at" type="TIMESTAMP WITH TIME ZONE" defaultValueComputed="now()">
+                <constraints nullable="false"/>
+            </column>
+            <column name="delivered_at" type="TIMESTAMP WITH TIME ZONE"/>
+            <column name="delivery_deadline_at" type="TIMESTAMP WITH TIME ZONE" defaultValueComputed="now() + interval '1 hour'">
+                <constraints nullable="false"/>
+            </column>
+        </createTable>
+        <modifySql dbms="postgresql">
+            <regExpReplace replace="\)$" with=", CONSTRAINT webhook_deliveries_status_check CHECK (status IN ('pending', 'delivered', 'exhausted')))"/>
+        </modifySql>
+    </changeSet>
+    <changeSet id="20261008082658173" author="Abhimanyu">
+        <addForeignKeyConstraint baseTableSchemaName="notifications" baseTableName="webhook_deliveries" baseColumnNames="business_id, event_id" referencedTableSchemaName="notifications" referencedTableName="events" referencedColumnNames="business_id, id" constraintName="fk_webhook_deliveries_event"/>
+        <addForeignKeyConstraint baseTableSchemaName="notifications" baseTableName="webhook_deliveries" baseColumnNames="business_id, endpoint_id" referencedTableSchemaName="notifications" referencedTableName="webhook_endpoints" referencedColumnNames="business_id, id" constraintName="fk_webhook_deliveries_endpoint"/>
+        <addUniqueConstraint schemaName="notifications" tableName="webhook_deliveries" columnNames="event_id, endpoint_id" constraintName="webhook_deliveries_event_id_endpoint_id_key"/>
+        <createIndex schemaName="notifications" tableName="webhook_deliveries" indexName="delivery_invoice">
+            <column name="business_id"/>
+            <column name="invoice_id"/>
+            <column name="created_at" descending="true"/>
+            <column name="id" descending="true"/>
+        </createIndex>
+        <createIndex schemaName="notifications" tableName="webhook_deliveries" indexName="delivery_business">
+            <column name="business_id"/>
+            <column name="created_at" descending="true"/>
+            <column name="id" descending="true"/>
+        </createIndex>
+    </changeSet>
+    <changeSet id="20261008082658175" author="Abhimanyu">
+        <createIndex schemaName="notifications" tableName="webhook_deliveries" indexName="delivery_due">
+            <column name="next_attempt_at"/>
+        </createIndex>
+        <modifySql dbms="postgresql">
+            <append value=" WHERE status = 'pending'"/>
+        </modifySql>
+    </changeSet>
+</databaseChangeLog>

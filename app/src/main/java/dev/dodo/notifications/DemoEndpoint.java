@@ -1,35 +1,27 @@
 package dev.dodo.notifications;
 
-import java.util.*;
-import org.springframework.beans.factory.annotation.Value;
-import org.springframework.boot.*;
+import dev.dodo.configuration.AppProperties;
+import java.util.UUID;
+import lombok.RequiredArgsConstructor;
+import org.springframework.boot.ApplicationArguments;
+import org.springframework.boot.ApplicationRunner;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
-import org.springframework.context.annotation.Profile;
-import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Component;
+import org.springframework.transaction.annotation.Transactional;
 
 @Component
-@Profile("!migrate")
+@RequiredArgsConstructor
 @ConditionalOnProperty(name = "app.demo-seed", havingValue = "true")
 public class DemoEndpoint implements ApplicationRunner {
-  private final JdbcTemplate jdbc;
-  private final SecretCipher cipher;
-  private final String url;
+	static final UUID BUSINESS_ID = UUID.fromString("01a11810-ce4f-76f3-9863-cbf7566684b5");
+	private final WebhookEndpointRepository endpoints;
+	private final SecretCipher cipher;
+	private final AppProperties app;
 
-  public DemoEndpoint(
-      JdbcTemplate jdbc, SecretCipher cipher, @Value("${app.webhook-url}") String url) {
-    this.jdbc = jdbc;
-    this.cipher = cipher;
-    this.url = url;
-  }
-
-  public void run(ApplicationArguments args) {
-    jdbc.update(
-        "INSERT INTO notifications.webhook_endpoints(id,business_id,url,secret_ciphertext) VALUES"
-            + " (?,?,?,?) ON CONFLICT(id) DO NOTHING",
-        UUID.fromString("33333333-3333-4333-8333-333333333333"),
-        UUID.fromString("11111111-1111-4111-8111-111111111111"),
-        url,
-        cipher.encrypt(Base64.getDecoder().decode("AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=")));
-  }
+	@Override
+	@Transactional
+	public void run(ApplicationArguments args) {
+		if (endpoints.existsByBusinessIdAndUrl(BUSINESS_ID, app.webhookUrl())) return;
+		endpoints.save(WebhookEndpointEntity.builder().businessId(BUSINESS_ID).url(app.webhookUrl()).secretCiphertext(cipher.encrypt(app.demoWebhookSecretBytes())).build());
+	}
 }

@@ -1,913 +1,1134 @@
-openapi: 3.0.3
+# GENERATED from the application code by ApiDocumentTest (mvn test). Do not edit by hand.
+# Live version: http://localhost:8080/v3/api-docs.yaml and http://localhost:8080/swagger-ui.html
+openapi: 3.1.0
 info:
+  description: Invoices and payments for each business. Amounts are whole US cents.
   title: Invoice and Payment Service
   version: 1.0.0
-  description: 'Business-scoped API keys. Integer cents only: numeric strings, decimal
-    and exponent money input are rejected. HTTP is local-only; production requires
-    TLS. JSON bodies limited to 64 KiB. Webhook delivery is at-least-once, unordered,
-    and bounded by its retry budget.'
 servers:
-- url: http://localhost:8080/api/v1
+- url: /
 security:
-- ApiKey: []
+- apiKey: []
 paths:
-  /customers:
-    post:
-      summary: Create customer
-      operationId: post_customers
-      responses:
-        '201':
-          description: Success
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Customer'
-          headers:
-            Location:
-              schema:
-                type: string
-              description: Created resource or payment-attempt status URL
-        '400': &id001
-          description: Malformed request, unknown field or invalid cursor
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-        '401': &id002
-          description: Invalid or revoked API key
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-        '404': &id003
-          description: Resource not found within this business
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-        '409': &id004
-          description: Idempotency or business-state conflict
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-        '413': &id005
-          description: Request body exceeds 64 KiB
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-        '422': &id006
-          description: Invalid field values
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-        '503': &id007
-          description: Temporary database failure
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-        '405':
-          description: HTTP method not supported
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-        '415':
-          description: Unsupported media type
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-        '500':
-          description: Unexpected internal error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/CreateCustomer'
+  /api/v1/customers:
     get:
-      summary: List customers
-      operationId: get_customers
-      responses:
-        '200':
-          description: Success
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/CustomerPage'
-        '400': *id001
-        '401': *id002
-        '404': *id003
-        '409': *id004
-        '413': *id005
-        '422': *id006
-        '503': *id007
-        '405':
-          description: HTTP method not supported
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-        '415':
-          description: Unsupported media type
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-        '500':
-          description: Unexpected internal error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
+      operationId: listCustomers
       parameters:
-      - &id008
+      - in: query
         name: limit
-        in: query
+        required: false
         schema:
           type: integer
+          format: int32
           default: 20
-          minimum: 1
           maximum: 100
-      - &id009
+          minimum: 1
+      - in: query
         name: cursor
-        in: query
+        required: false
         schema:
           type: string
-        description: Opaque cursor bound to business, list type and filters.
-  /customers/{id}:
-    get:
-      summary: Get customer
-      operationId: get_customers_id
       responses:
-        '200':
-          description: Success
+        "200":
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Customer'
-        '400': *id001
-        '401': *id002
-        '404': *id003
-        '409': *id004
-        '413': *id005
-        '422': *id006
-        '503': *id007
-        '405':
-          description: HTTP method not supported
+                $ref: "#/components/schemas/PageCustomer"
+          description: OK
+        "400":
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Error'
-        '415':
-          description: Unsupported media type
+                $ref: "#/components/schemas/ErrorResponse"
+          description: We could not read this request.
+        "401":
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Error'
-        '500':
-          description: Unexpected internal error
+                $ref: "#/components/schemas/ErrorResponse"
+          description: Use a valid API key.
+        "422":
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Error'
-      parameters:
-      - name: id
-        in: path
-        required: true
-        schema: &id010
-          type: string
-          format: uuid
-  /invoices:
+                $ref: "#/components/schemas/ErrorResponse"
+          description: Some details are missing or not valid.
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+          description: Something went wrong. Please try again.
+        "503":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+          description: The service is busy. Please try again.
+      tags:
+      - Customers
     post:
-      summary: Create immutable invoice
-      operationId: post_invoices
-      responses:
-        '201':
-          description: Success
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Invoice'
-          headers:
-            Location:
-              schema:
-                type: string
-              description: Created resource or payment-attempt status URL
-        '400': *id001
-        '401': *id002
-        '404': *id003
-        '409': *id004
-        '413': *id005
-        '422': *id006
-        '503': *id007
-        '405':
-          description: HTTP method not supported
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-        '415':
-          description: Unsupported media type
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-        '500':
-          description: Unexpected internal error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
+      operationId: createCustomer
       requestBody:
-        required: true
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/CreateInvoice'
-      description: Server computes total. Client total, currency and business_id are
-        not accepted. Positive invoice total up to 1000000000000 cents.
-    get:
-      summary: List invoices
-      operationId: get_invoices
+              $ref: "#/components/schemas/NewCustomer"
+        required: true
       responses:
-        '200':
-          description: Success
+        "201":
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/InvoicePage'
-        '400': *id001
-        '401': *id002
-        '404': *id003
-        '409': *id004
-        '413': *id005
-        '422': *id006
-        '503': *id007
-        '405':
-          description: HTTP method not supported
+                $ref: "#/components/schemas/Customer"
+          description: Created
+        "400":
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Error'
-        '415':
-          description: Unsupported media type
+                $ref: "#/components/schemas/ErrorResponse"
+          description: We could not read this request.
+        "401":
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Error'
-        '500':
-          description: Unexpected internal error
+                $ref: "#/components/schemas/ErrorResponse"
+          description: Use a valid API key.
+        "413":
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Error'
+                $ref: "#/components/schemas/ErrorResponse"
+          description: This request is too large.
+        "422":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+          description: Some details are missing or not valid.
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+          description: Something went wrong. Please try again.
+        "503":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+          description: The service is busy. Please try again.
+      tags:
+      - Customers
+  /api/v1/customers/{id}:
+    get:
+      operationId: getCustomer
       parameters:
-      - *id008
-      - *id009
-      - name: state
-        in: query
+      - in: path
+        name: id
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Customer"
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+          description: We could not read this request.
+        "401":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+          description: Use a valid API key.
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+          description: We could not find this item.
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+          description: Something went wrong. Please try again.
+        "503":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+          description: The service is busy. Please try again.
+      tags:
+      - Customers
+  /api/v1/events:
+    get:
+      operationId: listEvents
+      parameters:
+      - in: query
+        name: limit
+        required: false
+        schema:
+          type: integer
+          format: int32
+          default: 20
+          maximum: 100
+          minimum: 1
+      - in: query
+        name: cursor
+        required: false
+        schema:
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PageEvent"
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+          description: We could not read this request.
+        "401":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+          description: Use a valid API key.
+        "422":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+          description: Some details are missing or not valid.
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+          description: Something went wrong. Please try again.
+        "503":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+          description: The service is busy. Please try again.
+      tags:
+      - Webhooks and events
+  /api/v1/invoices:
+    get:
+      operationId: listInvoices
+      parameters:
+      - in: query
+        name: state
+        required: false
         schema:
           type: string
           enum:
           - open
           - paid
-      description: List entries omit items and payment action hints; use invoice detail
-        for those.
-  /invoices/{id}:
+      - in: query
+        name: limit
+        required: false
+        schema:
+          type: integer
+          format: int32
+          default: 20
+          maximum: 100
+          minimum: 1
+      - in: query
+        name: cursor
+        required: false
+        schema:
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PageInvoiceSummary"
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+          description: We could not read this request.
+        "401":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+          description: Use a valid API key.
+        "422":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+          description: Some details are missing or not valid.
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+          description: Something went wrong. Please try again.
+        "503":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+          description: The service is busy. Please try again.
+      tags:
+      - Invoices
+    post:
+      operationId: createInvoice
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/InvoiceInput"
+        required: true
+      responses:
+        "201":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Invoice"
+          description: Created
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+          description: We could not read this request.
+        "401":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+          description: Use a valid API key.
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+          description: We could not find this customer.
+        "413":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+          description: This request is too large.
+        "422":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+          description: Some details are missing or not valid.
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+          description: Something went wrong. Please try again.
+        "503":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+          description: The service is busy. Please try again.
+      tags:
+      - Invoices
+  /api/v1/invoices/preview:
+    post:
+      operationId: previewInvoice
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/InvoiceInput"
+        required: true
+      responses:
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+          description: We could not read this request.
+        "401":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+          description: Use a valid API key.
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+          description: We could not find this customer.
+        "413":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+          description: This request is too large.
+        "422":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+          description: Some details are missing or not valid.
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+          description: Something went wrong. Please try again.
+        "503":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+          description: The service is busy. Please try again.
+      tags:
+      - Invoices
+  /api/v1/invoices/{id}:
     get:
-      summary: Get invoice details
-      operationId: get_invoices_id
-      responses:
-        '200':
-          description: Success
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Invoice'
-        '400': *id001
-        '401': *id002
-        '404': *id003
-        '409': *id004
-        '413': *id005
-        '422': *id006
-        '503': *id007
-        '405':
-          description: HTTP method not supported
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-        '415':
-          description: Unsupported media type
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-        '500':
-          description: Unexpected internal error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
+      operationId: getInvoice
       parameters:
-      - name: id
-        in: path
-        required: true
-        schema: *id010
-  /invoices/preview:
-    post:
-      summary: Validate and calculate without saving
-      operationId: post_invoices_preview
-      responses:
-        '200':
-          description: Success
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/InvoicePreview'
-        '400': *id001
-        '401': *id002
-        '404': *id003
-        '409': *id004
-        '413': *id005
-        '422': *id006
-        '503': *id007
-        '405':
-          description: HTTP method not supported
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-        '415':
-          description: Unsupported media type
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-        '500':
-          description: Unexpected internal error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/CreateInvoice'
-  /invoices/{id}/pay:
-    post:
-      summary: Accept payment attempt
-      operationId: post_invoices_id_pay
-      responses:
-        '202':
-          description: Accepted for asynchronous processing
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/AcceptedPayment'
-          headers:
-            Location:
-              schema:
-                type: string
-              description: Created resource or payment-attempt status URL
-        '400': *id001
-        '401': *id002
-        '404': *id003
-        '409': *id004
-        '413': *id005
-        '422': *id006
-        '503': *id007
-        '405':
-          description: HTTP method not supported
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-        '415':
-          description: Unsupported media type
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-        '500':
-          description: Unexpected internal error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/Pay'
-      parameters:
-      - name: id
-        in: path
-        required: true
-        schema: *id010
-      - name: Idempotency-Key
-        in: header
+      - in: path
+        name: id
         required: true
         schema:
           type: string
-          minLength: 1
-          maxLength: 128
-          pattern: ^[!-~]+$
-      description: Replay the original 202 body for an accepted identical request.
-        Reuse with a changed body/invoice returns 409. Read current outcome using
-        GET. Validation and pre-acceptance rejection do not reserve keys. No key expiry
-        in demo.
-  /payment-attempts/{id}:
-    get:
-      summary: Get current outcome
-      operationId: get_payment_attempts_id
+          format: uuid
       responses:
-        '200':
-          description: Success
+        "200":
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/PaymentAttempt'
-        '400': *id001
-        '401': *id002
-        '404': *id003
-        '409': *id004
-        '413': *id005
-        '422': *id006
-        '503': *id007
-        '405':
-          description: HTTP method not supported
+                $ref: "#/components/schemas/Invoice"
+          description: OK
+        "400":
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Error'
-        '415':
-          description: Unsupported media type
+                $ref: "#/components/schemas/ErrorResponse"
+          description: We could not read this request.
+        "401":
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Error'
-        '500':
-          description: Unexpected internal error
+                $ref: "#/components/schemas/ErrorResponse"
+          description: Use a valid API key.
+        "404":
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Error'
-      parameters:
-      - name: id
-        in: path
-        required: true
-        schema: *id010
-  /invoices/{id}/payment-attempts:
-    get:
-      summary: List invoice attempts
-      operationId: get_invoices_id_payment_attempts
-      responses:
-        '200':
-          description: Success
+                $ref: "#/components/schemas/ErrorResponse"
+          description: We could not find this item.
+        "500":
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/PaymentAttemptPage'
-        '400': *id001
-        '401': *id002
-        '404': *id003
-        '409': *id004
-        '413': *id005
-        '422': *id006
-        '503': *id007
-        '405':
-          description: HTTP method not supported
+                $ref: "#/components/schemas/ErrorResponse"
+          description: Something went wrong. Please try again.
+        "503":
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Error'
-        '415':
-          description: Unsupported media type
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-        '500':
-          description: Unexpected internal error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-      parameters:
-      - *id008
-      - *id009
-      - name: id
-        in: path
-        required: true
-        schema: *id010
-  /webhook-endpoints:
+                $ref: "#/components/schemas/ErrorResponse"
+          description: The service is busy. Please try again.
+      tags:
+      - Invoices
+  /api/v1/invoices/{id}/pay:
     post:
-      summary: Register immutable endpoint
-      operationId: post_webhook_endpoints
-      responses:
-        '201':
-          description: Success
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/RegisteredEndpoint'
-          headers:
-            Location:
-              schema:
-                type: string
-              description: Created resource or payment-attempt status URL
-        '400': *id001
-        '401': *id002
-        '404': *id003
-        '409': *id004
-        '413': *id005
-        '422': *id006
-        '503': *id007
-        '405':
-          description: HTTP method not supported
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-        '415':
-          description: Unsupported media type
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-        '500':
-          description: Unexpected internal error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-      requestBody:
+      description: Starts a payment and finishes it in the background. Check the payment
+        status or wait for a webhook. Sending the same request again returns the same
+        answer.
+      operationId: payInvoice
+      parameters:
+      - in: path
+        name: id
         required: true
+        schema:
+          type: string
+          format: uuid
+      - description: A unique value for this payment. Send the same value if you retry.
+        in: header
+        name: Idempotency-Key
+        required: true
+        schema:
+          type: string
+          pattern: "^[!-~]{1,128}$"
+      requestBody:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/RegisterEndpoint'
-    get:
-      summary: List endpoints without secrets
-      operationId: get_webhook_endpoints
-      responses:
-        '200':
-          description: Success
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/WebhookEndpointPage'
-        '400': *id001
-        '401': *id002
-        '404': *id003
-        '409': *id004
-        '413': *id005
-        '422': *id006
-        '503': *id007
-        '405':
-          description: HTTP method not supported
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-        '415':
-          description: Unsupported media type
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-        '500':
-          description: Unexpected internal error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-      parameters:
-      - *id008
-      - *id009
-  /webhook-endpoints/{id}:
-    get:
-      summary: Get endpoint without secret
-      operationId: get_webhook_endpoints_id
-      responses:
-        '200':
-          description: Success
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/WebhookEndpoint'
-        '400': *id001
-        '401': *id002
-        '404': *id003
-        '409': *id004
-        '413': *id005
-        '422': *id006
-        '503': *id007
-        '405':
-          description: HTTP method not supported
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-        '415':
-          description: Unsupported media type
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-        '500':
-          description: Unexpected internal error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-      parameters:
-      - name: id
-        in: path
+              $ref: "#/components/schemas/PaymentRequest"
         required: true
-        schema: *id010
-  /webhook-deliveries:
-    get:
-      summary: Inspect deliveries
-      operationId: get_webhook_deliveries
       responses:
-        '200':
-          description: Success
+        "202":
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/WebhookDeliveryPage'
-        '400': *id001
-        '401': *id002
-        '404': *id003
-        '409': *id004
-        '413': *id005
-        '422': *id006
-        '503': *id007
-        '405':
-          description: HTTP method not supported
+                $ref: "#/components/schemas/PaymentAccepted"
+          description: Accepted
+        "400":
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Error'
-        '415':
-          description: Unsupported media type
+                $ref: "#/components/schemas/ErrorResponse"
+          description: We could not read this request.
+        "401":
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Error'
-        '500':
-          description: Unexpected internal error
+                $ref: "#/components/schemas/ErrorResponse"
+          description: Use a valid API key.
+        "404":
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Error'
-      parameters:
-      - *id008
-      - *id009
-  /events:
+                $ref: "#/components/schemas/ErrorResponse"
+          description: We could not find this item.
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+          description: "The invoice is paid, a payment is in progress, or this request\
+            \ was used before."
+        "413":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+          description: This request is too large.
+        "422":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+          description: Some details are missing or not valid.
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+          description: Something went wrong. Please try again.
+        "503":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+          description: The service is busy. Please try again.
+      summary: Pay an invoice
+      tags:
+      - Payments
+  /api/v1/invoices/{id}/payment-attempts:
     get:
-      summary: Browse historical events
-      operationId: get_events
-      responses:
-        '200':
-          description: Success
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/EventPage'
-        '400': *id001
-        '401': *id002
-        '404': *id003
-        '409': *id004
-        '413': *id005
-        '422': *id006
-        '503': *id007
-        '405':
-          description: HTTP method not supported
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-        '415':
-          description: Unsupported media type
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-        '500':
-          description: Unexpected internal error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
+      operationId: listPaymentAttempts
       parameters:
-      - *id008
-      - *id009
-      description: Newest first. Not a guaranteed incremental stream under concurrent
-        commits. Re-scan and deduplicate IDs; consult current invoice state to reconcile.
+      - in: path
+        name: id
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - in: query
+        name: limit
+        required: false
+        schema:
+          type: integer
+          format: int32
+          default: 20
+          maximum: 100
+          minimum: 1
+      - in: query
+        name: cursor
+        required: false
+        schema:
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PagePaymentAttempt"
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+          description: We could not read this request.
+        "401":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+          description: Use a valid API key.
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+          description: We could not find this item.
+        "422":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+          description: Some details are missing or not valid.
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+          description: Something went wrong. Please try again.
+        "503":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+          description: The service is busy. Please try again.
+      tags:
+      - Payments
+  /api/v1/payment-attempts/{id}:
+    get:
+      operationId: getPaymentAttempt
+      parameters:
+      - in: path
+        name: id
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PaymentAttempt"
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+          description: We could not read this request.
+        "401":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+          description: Use a valid API key.
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+          description: We could not find this item.
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+          description: Something went wrong. Please try again.
+        "503":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+          description: The service is busy. Please try again.
+      tags:
+      - Payments
+  /api/v1/webhook-deliveries:
+    get:
+      operationId: listWebhookDeliveries
+      parameters:
+      - in: query
+        name: invoice_id
+        required: false
+        schema:
+          type: string
+          format: uuid
+      - in: query
+        name: limit
+        required: false
+        schema:
+          type: integer
+          format: int32
+          default: 20
+          maximum: 100
+          minimum: 1
+      - in: query
+        name: cursor
+        required: false
+        schema:
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PageWebhookDelivery"
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+          description: We could not read this request.
+        "401":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+          description: Use a valid API key.
+        "422":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+          description: Some details are missing or not valid.
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+          description: Something went wrong. Please try again.
+        "503":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+          description: The service is busy. Please try again.
+      tags:
+      - Webhooks and events
+  /api/v1/webhook-endpoints:
+    get:
+      operationId: listWebhookEndpoints
+      parameters:
+      - in: query
+        name: limit
+        required: false
+        schema:
+          type: integer
+          format: int32
+          default: 20
+          maximum: 100
+          minimum: 1
+      - in: query
+        name: cursor
+        required: false
+        schema:
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PageWebhookEndpoint"
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+          description: We could not read this request.
+        "401":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+          description: Use a valid API key.
+        "422":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+          description: Some details are missing or not valid.
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+          description: Something went wrong. Please try again.
+        "503":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+          description: The service is busy. Please try again.
+      tags:
+      - Webhooks and events
+    post:
+      operationId: registerWebhookEndpoint
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/NewWebhookEndpoint"
+        required: true
+      responses:
+        "201":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RegisteredWebhookEndpoint"
+          description: Created
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+          description: We could not read this request.
+        "401":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+          description: Use a valid API key.
+        "413":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+          description: This request is too large.
+        "422":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+          description: Some details are missing or not valid.
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+          description: Something went wrong. Please try again.
+        "503":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+          description: The service is busy. Please try again.
+      tags:
+      - Webhooks and events
+  /api/v1/webhook-endpoints/{id}:
+    get:
+      operationId: getWebhookEndpoint
+      parameters:
+      - in: path
+        name: id
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WebhookEndpoint"
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+          description: We could not read this request.
+        "401":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+          description: Use a valid API key.
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+          description: We could not find this item.
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+          description: Something went wrong. Please try again.
+        "503":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+          description: The service is busy. Please try again.
+      tags:
+      - Webhooks and events
 components:
-  securitySchemes:
-    ApiKey:
-      type: http
-      scheme: bearer
-      description: prefix.secret API key
   schemas:
-    Error:
-      type: object
-      properties:
-        error:
-          type: object
-          properties:
-            code:
-              type: string
-            message:
-              type: string
-            request_id:
-              type: string
-            details:
-              type: array
-              items:
-                type: object
-                properties:
-                  field:
-                    type: string
-                  message:
-                    type: string
-          required:
-          - code
-          - message
-          - request_id
-      required:
-      - error
-    CreateCustomer:
-      type: object
-      properties:
-        name: &id011
-          type: string
-          minLength: 1
-          maxLength: 200
-        email: &id012
-          type: string
-          format: email
-          maxLength: 254
-      required:
-      - name
-      - email
-      additionalProperties: false
     Customer:
-      type: object
       properties:
-        id: *id010
-        name: *id011
-        email: *id012
-        created_at: &id017
+        created_at:
           type: string
           format: date-time
-      required:
-      - id
-      - name
-      - email
-      - created_at
-    InvoiceItemInput:
-      type: object
-      properties:
-        description: &id014
+        email:
           type: string
-          minLength: 1
-          maxLength: 500
-        quantity: &id015
-          type: integer
-          minimum: 1
-          maximum: 10000
-        unit_amount_cents: &id016
-          type: integer
-          format: int64
-          minimum: 0
-          maximum: 1000000000000
-      required:
-      - description
-      - quantity
-      - unit_amount_cents
-      additionalProperties: false
-    CreateInvoice:
-      type: object
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+    ErrorDetails:
       properties:
-        customer_id: *id010
-        due_date: &id013
+        code:
+          type: string
+        details:
+          type: array
+          items:
+            $ref: "#/components/schemas/InvalidField"
+        message:
+          type: string
+        request_id:
+          type: string
+    ErrorResponse:
+      properties:
+        error:
+          $ref: "#/components/schemas/ErrorDetails"
+    Event:
+      properties:
+        created_at:
+          type: string
+          format: date-time
+        event_type:
+          type: string
+          enum:
+          - invoice.created
+          - invoice.paid
+          - invoice.payment_failed
+        id:
+          type: string
+          format: uuid
+        payload:
+          type: object
+    InvalidField:
+      properties:
+        field:
+          type: string
+        message:
+          type: string
+    Invoice:
+      properties:
+        allowed_actions:
+          type: array
+          items:
+            type: string
+        amount_display:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        currency:
+          type: string
+        customer_id:
+          type: string
+          format: uuid
+        due_date:
           type: string
           format: date
+        id:
+          type: string
+          format: uuid
         items:
           type: array
-          minItems: 1
-          maxItems: 100
           items:
-            $ref: '#/components/schemas/InvoiceItemInput'
-      required:
-      - customer_id
-      - due_date
-      - items
-      additionalProperties: false
-    Invoice:
-      type: object
-      properties:
-        id: *id010
-        customer_id: *id010
-        due_date: *id013
+            $ref: "#/components/schemas/InvoiceItem"
+        paid_at:
+          type: string
+          format: date-time
+        payment_block_reason:
+          type: string
+          enum:
+          - invoice_already_paid
+          - payment_in_progress
         state:
           type: string
           enum:
           - open
           - paid
-        currency:
-          type: string
-          enum:
-          - USD
         total_amount_cents:
           type: integer
           format: int64
-        amount_display:
+    InvoiceInput:
+      properties:
+        customer_id:
           type: string
+          format: uuid
+        due_date:
+          type: string
+          format: date
         items:
           type: array
           items:
-            type: object
-            properties:
-              description: *id014
-              quantity: *id015
-              unit_amount_cents: *id016
-              unit_amount_display:
-                type: string
-        allowed_actions:
-          type: array
-          items:
-            type: string
-            enum:
-            - pay
-        payment_block_reason: &id018
+            $ref: "#/components/schemas/LineItem"
+          maxItems: 100
+          minItems: 1
+      required:
+      - customer_id
+      - due_date
+      - items
+    InvoiceItem:
+      properties:
+        description:
           type: string
-          nullable: true
-        created_at: *id017
+        quantity:
+          type: integer
+          format: int32
+        unit_amount_cents:
+          type: integer
+          format: int64
+        unit_amount_display:
+          type: string
+    InvoiceSummary:
+      properties:
+        amount_display:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        currency:
+          type: string
+        customer_id:
+          type: string
+          format: uuid
+        due_date:
+          type: string
+          format: date
+        id:
+          type: string
+          format: uuid
         paid_at:
           type: string
           format: date-time
-          nullable: true
-      required:
-      - id
-      - customer_id
-      - state
-      - currency
-      - total_amount_cents
-      - due_date
-      - created_at
-    Pay:
-      type: object
-      properties:
-        card_token:
+        state:
           type: string
           enum:
-          - tok_success
-          - tok_card_declined
-          - tok_insufficient_funds
-          - tok_timeout
-          - tok_network_error
-      required:
-      - card_token
-      additionalProperties: false
-    AcceptedPayment:
-      type: object
+          - open
+          - paid
+        total_amount_cents:
+          type: integer
+          format: int64
+    LineItem:
       properties:
-        payment_attempt_id: *id010
-        invoice_id: *id010
-        status:
+        description:
           type: string
-          enum:
-          - pending
-        status_url:
-          type: string
+          maxLength: 500
+          minLength: 1
+        quantity:
+          type: integer
+          format: int32
+          maximum: 10000
+          minimum: 1
+        unit_amount_cents:
+          type: integer
+          format: int64
+          maximum: 1000000000000
+          minimum: 0
       required:
-      - payment_attempt_id
-      - invoice_id
-      - status
-      - status_url
-    PaymentAttempt:
-      type: object
+      - description
+      - quantity
+      - unit_amount_cents
+    NewCustomer:
       properties:
-        id: *id010
-        invoice_id: *id010
+        email:
+          type: string
+          format: email
+          maxLength: 254
+          minLength: 1
+        name:
+          type: string
+          maxLength: 200
+          minLength: 1
+      required:
+      - email
+      - name
+    NewWebhookEndpoint:
+      properties:
+        url:
+          type: string
+          maxLength: 2048
+          minLength: 1
+      required:
+      - url
+    PageCustomer:
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/Customer"
+        next_cursor:
+          type: string
+    PageEvent:
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/Event"
+        next_cursor:
+          type: string
+    PageInvoiceSummary:
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/InvoiceSummary"
+        next_cursor:
+          type: string
+    PagePaymentAttempt:
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/PaymentAttempt"
+        next_cursor:
+          type: string
+    PageWebhookDelivery:
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/WebhookDelivery"
+        next_cursor:
+          type: string
+    PageWebhookEndpoint:
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/WebhookEndpoint"
+        next_cursor:
+          type: string
+    PaymentAccepted:
+      properties:
+        invoice_id:
+          type: string
+          format: uuid
+        payment_attempt_id:
+          type: string
+          format: uuid
         status:
           type: string
           enum:
@@ -915,229 +1136,120 @@ components:
           - unknown
           - succeeded
           - failed
+        status_url:
+          type: string
+    PaymentAttempt:
+      properties:
         amount_cents:
           type: integer
           format: int64
         amount_display:
           type: string
-        currency:
-          type: string
-          enum:
-          - USD
-        psp_reference: *id018
-        failure_code: *id018
-        last_error_code: *id018
-        review_required:
-          type: boolean
-        created_at: *id017
         completed_at:
           type: string
           format: date-time
-          nullable: true
-      required:
-      - id
-      - invoice_id
-      - status
-      - amount_cents
-      - currency
-      - review_required
-      - created_at
-    RegisterEndpoint:
-      type: object
-      properties:
-        url:
+        created_at:
           type: string
-          format: uri
-          maxLength: 2048
-          description: Must exactly match operator-configured WEBHOOK_URL in this
-            local demo.
-      required:
-      - url
-      additionalProperties: false
-    WebhookEndpoint:
-      type: object
-      properties:
-        id: *id010
-        url: &id019
+          format: date-time
+        currency:
           type: string
-        active: &id020
+        failure_code:
+          type: string
+        id:
+          type: string
+          format: uuid
+        invoice_id:
+          type: string
+          format: uuid
+        last_error_code:
+          type: string
+        psp_reference:
+          type: string
+        review_required:
           type: boolean
-        created_at: *id017
-      required:
-      - id
-      - url
-      - active
-    RegisteredEndpoint:
-      type: object
+        status:
+          type: string
+          enum:
+          - pending
+          - unknown
+          - succeeded
+          - failed
+    PaymentRequest:
       properties:
-        id: *id010
-        url: *id019
-        active: *id020
-        created_at: *id017
+        card_token:
+          type: string
+          minLength: 1
+          pattern: tok_(success|insufficient_funds|card_declined|timeout|network_error)
+      required:
+      - card_token
+    RegisteredWebhookEndpoint:
+      properties:
+        active:
+          type: boolean
+        id:
+          type: string
+          format: uuid
         signing_secret:
           type: string
-          description: Base64 encoded random 32-byte secret, returned once.
-      required:
-      - id
-      - url
-      - active
-      - signing_secret
-    EventEnvelope:
-      type: object
+        url:
+          type: string
+    WebhookDelivery:
       properties:
-        id: *id010
-        type:
+        attempt_count:
+          type: integer
+          format: int32
+        created_at:
+          type: string
+          format: date-time
+        delivered_at:
+          type: string
+          format: date-time
+        endpoint_id:
+          type: string
+          format: uuid
+        event_id:
+          type: string
+          format: uuid
+        event_type:
           type: string
           enum:
           - invoice.created
           - invoice.paid
           - invoice.payment_failed
-        created_at: *id017
-        data:
-          type: object
-          properties:
-            invoice_id: *id010
-            payment_attempt_id: *id010
-            state:
-              type: string
-            total_amount_cents:
-              type: integer
-              format: int64
-            currency:
-              type: string
-            failure_code:
-              type: string
-          required:
-          - invoice_id
-          - state
-          - total_amount_cents
-          - currency
-      required:
-      - id
-      - type
-      - created_at
-      - data
-    Event:
-      type: object
-      properties:
-        id: *id010
-        event_type:
+        id:
           type: string
-        created_at: *id017
-        payload:
-          $ref: '#/components/schemas/EventEnvelope'
-      required:
-      - id
-      - event_type
-      - created_at
-      - payload
-    WebhookDelivery:
-      type: object
-      properties:
-        id: *id010
-        event_id: *id010
-        endpoint_id: *id010
+          format: uuid
+        invoice_id:
+          type: string
+          format: uuid
+        last_error_code:
+          type: string
+        last_http_status:
+          type: integer
+          format: int32
+        next_attempt_at:
+          type: string
+          format: date-time
         status:
           type: string
           enum:
           - pending
           - delivered
           - exhausted
-        attempt_count:
-          type: integer
-        next_attempt_at: *id017
-        last_http_status:
-          type: integer
-          nullable: true
-        last_error_code: *id018
-        created_at: *id017
-        delivered_at:
+    WebhookEndpoint:
+      properties:
+        active:
+          type: boolean
+        created_at:
           type: string
           format: date-time
-          nullable: true
-      required:
-      - id
-      - event_id
-      - endpoint_id
-      - status
-      - attempt_count
-      - created_at
-    InvoicePreview:
-      type: object
-      properties:
-        currency:
+        id:
           type: string
-          enum:
-          - USD
-        total_amount_cents:
-          type: integer
-          format: int64
-      required:
-      - currency
-      - total_amount_cents
-    CustomerPage:
-      type: object
-      properties:
-        data:
-          type: array
-          items:
-            $ref: '#/components/schemas/Customer'
-        next_cursor: *id018
-      required:
-      - data
-      - next_cursor
-    InvoicePage:
-      type: object
-      properties:
-        data:
-          type: array
-          items:
-            $ref: '#/components/schemas/Invoice'
-        next_cursor: *id018
-      required:
-      - data
-      - next_cursor
-    PaymentAttemptPage:
-      type: object
-      properties:
-        data:
-          type: array
-          items:
-            $ref: '#/components/schemas/PaymentAttempt'
-        next_cursor: *id018
-      required:
-      - data
-      - next_cursor
-    WebhookEndpointPage:
-      type: object
-      properties:
-        data:
-          type: array
-          items:
-            $ref: '#/components/schemas/WebhookEndpoint'
-        next_cursor: *id018
-      required:
-      - data
-      - next_cursor
-    WebhookDeliveryPage:
-      type: object
-      properties:
-        data:
-          type: array
-          items:
-            $ref: '#/components/schemas/WebhookDelivery'
-        next_cursor: *id018
-      required:
-      - data
-      - next_cursor
-    EventPage:
-      type: object
-      properties:
-        data:
-          type: array
-          items:
-            $ref: '#/components/schemas/Event'
-        next_cursor: *id018
-      required:
-      - data
-      - next_cursor
+          format: uuid
+        url:
+          type: string
+  securitySchemes:
+    apiKey:
+      description: Use a valid API key.
+      scheme: bearer
+      type: http

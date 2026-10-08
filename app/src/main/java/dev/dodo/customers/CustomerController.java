@@ -1,54 +1,54 @@
 package dev.dodo.customers;
 
-import dev.dodo.http.Pages;
-import dev.dodo.identity.Business;
-import jakarta.servlet.http.HttpServletRequest;
+import dev.dodo.common.Messages;
+import dev.dodo.common.Page;
+import dev.dodo.common.PageQuery;
+import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
-import jakarta.validation.constraints.*;
+import jakarta.validation.constraints.Email;
+import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.Size;
 import java.net.URI;
-import java.util.*;
-import org.springframework.http.*;
-import org.springframework.web.bind.annotation.*;
+import java.util.UUID;
+import lombok.RequiredArgsConstructor;
+import org.springdoc.core.annotations.ParameterObject;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
+import org.springframework.security.core.annotation.AuthenticationPrincipal;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.ResponseStatus;
+import org.springframework.web.bind.annotation.RestController;
 
 @RestController
+@RequiredArgsConstructor
+@Tag(name = "Customers")
 @RequestMapping("/api/v1/customers")
 public class CustomerController {
-  public record Create(
-      @NotBlank @Size(max = 200) String name, @NotBlank @Email @Size(max = 254) String email) {}
+	public record NewCustomer(
+		@NotBlank(message = Messages.NAME_REQUIRED) @Size(max = 200, message = Messages.NAME_TOO_LONG) String name,
+		@NotBlank(message = Messages.EMAIL_REQUIRED) @Email(message = Messages.EMAIL_INVALID) @Size(max = 254, message = Messages.EMAIL_TOO_LONG) String email) {
+	}
 
-  private final CustomerService service;
-  private final Pages pages;
+	private final CustomerService service;
 
-  public CustomerController(CustomerService service, Pages pages) {
-    this.service = service;
-    this.pages = pages;
-  }
+	@PostMapping
+	@ResponseStatus(HttpStatus.CREATED)
+	public ResponseEntity<Customer> createCustomer(@AuthenticationPrincipal UUID business, @Valid @RequestBody NewCustomer body) {
+		var customer = service.create(business, body.name(), body.email());
+		return ResponseEntity.created(URI.create("/api/v1/customers/" + customer.id())).body(customer);
+	}
 
-  @PostMapping
-  public ResponseEntity<?> create(HttpServletRequest r, @Valid @RequestBody Create body) {
-    var customer = service.create(Business.from(r), body.name(), body.email());
-    return ResponseEntity.created(URI.create("/api/v1/customers/" + customer.get("id")))
-        .body(customer);
-  }
+	@GetMapping("/{id}")
+	public Customer getCustomer(@AuthenticationPrincipal UUID business, @PathVariable UUID id) {
+		return service.get(business, id);
+	}
 
-  @GetMapping("/{id}")
-  public Object get(HttpServletRequest r, @PathVariable UUID id) {
-    return service.get(Business.from(r), id);
-  }
-
-  @GetMapping
-  public Object list(
-      HttpServletRequest r,
-      @RequestParam(defaultValue = "20") int limit,
-      @RequestParam(required = false) String cursor) {
-    return pages.list(
-        "customers.customers",
-        "id,name,email,created_at",
-        Business.from(r),
-        "customers",
-        "",
-        List.of(),
-        limit,
-        cursor);
-  }
+	@GetMapping
+	public Page<Customer> listCustomers(@AuthenticationPrincipal UUID business, @Valid @ParameterObject PageQuery page) {
+		return service.list(business, page);
+	}
 }

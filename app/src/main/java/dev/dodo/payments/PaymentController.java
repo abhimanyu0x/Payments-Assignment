@@ -1,84 +1,76 @@
 package dev.dodo.payments;
 
-import dev.dodo.billing.InvoicePayments;
-import dev.dodo.http.*;
-import dev.dodo.identity.Business;
-import jakarta.servlet.http.HttpServletRequest;
+import dev.dodo.common.ErrorResponse;
+import dev.dodo.common.Messages;
+import dev.dodo.common.Page;
+import dev.dodo.common.PageQuery;
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.Parameter;
+import io.swagger.v3.oas.annotations.media.Content;
+import io.swagger.v3.oas.annotations.media.Schema;
+import io.swagger.v3.oas.annotations.responses.ApiResponse;
+import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
-import jakarta.validation.constraints.*;
-import java.util.*;
-import org.springframework.http.*;
-import org.springframework.jdbc.core.JdbcTemplate;
-import org.springframework.web.bind.annotation.*;
+import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.Pattern;
+import java.util.UUID;
+import lombok.RequiredArgsConstructor;
+import org.springdoc.core.annotations.ParameterObject;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
+import org.springframework.security.core.annotation.AuthenticationPrincipal;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestHeader;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.ResponseStatus;
+import org.springframework.web.bind.annotation.RestController;
 
 @RestController
+@RequiredArgsConstructor
+@Tag(name = "Payments")
 @RequestMapping("/api/v1")
 public class PaymentController {
-  public record Pay(
-      @NotBlank
-          @Size(max = 128)
-          @Pattern(regexp = "tok_(success|insufficient_funds|card_declined|timeout|network_error)")
-          String cardToken) {}
+	public record PaymentRequest(
+		@NotBlank(message = Messages.PAYMENT_METHOD_REQUIRED)
+		@Pattern(regexp = "tok_(success|insufficient_funds|card_declined|timeout|network_error)", message = Messages.PAYMENT_METHOD_NOT_SUPPORTED)
+		String cardToken) {
+	}
 
-  private static final String FIELDS =
-      "id,invoice_id,status,amount_cents,'USD' AS"
-          + " currency,psp_reference,failure_code,last_error_code,review_required,created_at,completed_at";
-  private final PaymentService service;
-  private final JdbcTemplate jdbc;
-  private final Json json;
-  private final Pages pages;
-  private final InvoicePayments invoices;
+	private final PaymentService service;
 
-  public PaymentController(
-      PaymentService service, JdbcTemplate jdbc, Json json, Pages pages, InvoicePayments invoices) {
-    this.invoices = invoices;
-    this.service = service;
-    this.jdbc = jdbc;
-    this.json = json;
-    this.pages = pages;
-  }
+	@PostMapping("/invoices/{id}/pay")
+	@ResponseStatus(HttpStatus.ACCEPTED)
+	@Operation(
+		summary = "Pay an invoice",
+		description = Messages.DOC_PAY)
+	@ApiResponse(
+		responseCode = "409",
+		description = Messages.DOC_PAY_CONFLICT,
+		content = @Content(schema = @Schema(implementation = ErrorResponse.class)))
+	public ResponseEntity<PaymentAccepted> payInvoice(
+		@AuthenticationPrincipal UUID business,
+		@PathVariable UUID id,
+		@Parameter(
+			required = true,
+			description = Messages.DOC_PAYMENT_REFERENCE,
+			schema = @Schema(pattern = PaymentService.IDEMPOTENCY_KEY_PATTERN))
+		@RequestHeader(value = "Idempotency-Key", required = false)
+		String key,
+		@Valid @RequestBody PaymentRequest body) {
+		var accepted = service.accept(business, id, key, body.cardToken());
+		return ResponseEntity.accepted().location(accepted.location()).body(accepted);
+	}
 
-  @PostMapping("/invoices/{id}/pay")
-  public ResponseEntity<String> pay(
-      HttpServletRequest r,
-      @PathVariable UUID id,
-      @RequestHeader(value = "Idempotency-Key", required = false) String key,
-      @Valid @RequestBody Pay body) {
-    String response = service.accept(Business.from(r), id, key, body.cardToken());
-    @SuppressWarnings("unchecked")
-    var parsed = (Map<String, Object>) json.read(response);
-    return ResponseEntity.accepted()
-        .header("Location", parsed.get("status_url").toString())
-        .contentType(MediaType.APPLICATION_JSON)
-        .body(response);
-  }
+	@GetMapping("/payment-attempts/{id}")
+	public PaymentAttempt getPaymentAttempt(@AuthenticationPrincipal UUID business, @PathVariable UUID id) {
+		return service.get(business, id);
+	}
 
-  @GetMapping("/payment-attempts/{id}")
-  public Object get(HttpServletRequest r, @PathVariable UUID id) {
-    var rows =
-        jdbc.queryForList(
-            "SELECT " + FIELDS + " FROM payments.payment_attempts WHERE business_id=? AND id=?",
-            Business.from(r),
-            id);
-    if (rows.isEmpty()) throw ApiError.missing();
-    return Rows.clean(rows.get(0));
-  }
-
-  @GetMapping("/invoices/{id}/payment-attempts")
-  public Object history(
-      HttpServletRequest r,
-      @PathVariable UUID id,
-      @RequestParam(defaultValue = "20") int limit,
-      @RequestParam(required = false) String cursor) {
-    invoices.requireExists(Business.from(r), id);
-    return pages.list(
-        "payments.payment_attempts",
-        FIELDS,
-        Business.from(r),
-        "attempts:" + id,
-        " AND invoice_id=?",
-        List.of(id),
-        limit,
-        cursor);
-  }
+	@GetMapping("/invoices/{id}/payment-attempts")
+	public Page<PaymentAttempt> listPaymentAttempts(@AuthenticationPrincipal UUID business, @PathVariable UUID id, @Valid @ParameterObject PageQuery page) {
+		return service.history(business, id, page);
+	}
 }

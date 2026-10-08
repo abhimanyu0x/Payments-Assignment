@@ -1,320 +1,482 @@
 package dev.dodo;
 
-import static org.junit.jupiter.api.Assertions.*;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.reset;
 
-import com.fasterxml.jackson.databind.*;
-import com.sun.net.httpserver.HttpServer;
-import dev.dodo.payments.*;
-import java.net.*;
-import java.net.http.*;
-import java.util.*;
-import java.util.concurrent.*;
-import java.util.concurrent.atomic.*;
-import org.junit.jupiter.api.*;
+import com.fasterxml.jackson.databind.JsonNode;
+import dev.dodo.billing.InvoiceEntity;
+import dev.dodo.billing.InvoiceRepository;
+import dev.dodo.common.Messages;
+import dev.dodo.identity.ApiKeyService;
+import dev.dodo.identity.BusinessEntity;
+import dev.dodo.identity.BusinessRepository;
+import dev.dodo.notifications.EventType;
+import dev.dodo.notifications.WebhookEvents;
+import dev.dodo.payments.PaymentAttemptEntity;
+import dev.dodo.payments.PaymentAttemptRepository;
+import dev.dodo.payments.PaymentProcessorClient;
+import dev.dodo.payments.PaymentService;
+import dev.dodo.payments.PaymentStatus;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+import java.time.Instant;
+import java.time.LocalDate;
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.List;
+import java.util.Map;
+import java.util.UUID;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.boot.test.web.server.LocalServerPort;
-import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
-import org.testcontainers.containers.PostgreSQLContainer;
-import org.testcontainers.junit.jupiter.*;
+import org.springframework.test.context.TestPropertySource;
+import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
 
-@Testcontainers
-@SpringBootTest(
-    webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
-    properties = {
-      "spring.flyway.enabled=true",
-      "app.workers-enabled=false",
-      "app.demo-seed=false",
-      "app.psp-timeout-ms=150",
-      "app.payment-retry-delays=0,0,0,0,0,0"
-    })
-class PaymentIntegrationTest {
-  @Container
-  static PostgreSQLContainer<?> postgres =
-      new PostgreSQLContainer<>("postgres:17.6-alpine").withInitScript("roles.sql");
+@TestPropertySource(properties = {
+	"app.psp-timeout=150ms",
+	"app.payment-lease=0s",
+	"app.payment-retry-delays=0s,0s,0s,0s,0s,0s"
+})
+class PaymentIntegrationTest extends IntegrationTest {
+	static final Map<String, String> SUCCESS = token("tok_success");
+	static final FakeProcessor psp = FakeProcessor.start();
 
-  static final ObjectMapper JSON = new ObjectMapper();
-  static final AtomicInteger posts = new AtomicInteger();
-  static final Map<String, String> operations = new ConcurrentHashMap<>();
-  static final AtomicBoolean slow = new AtomicBoolean();
-  static final HttpServer psp;
+	@DynamicPropertySource
+	static void processor(DynamicPropertyRegistry r) {
+		r.add("app.psp-url", psp::url);
+	}
 
-  static {
-    try {
-      psp = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
-      psp.setExecutor(Executors.newCachedThreadPool());
-      psp.createContext(
-          "/payments",
-          exchange -> {
-            try {
-              String id;
-              if (exchange.getRequestMethod().equals("POST")) {
-                var request = JSON.readTree(exchange.getRequestBody());
-                id = request.get("operation_id").asText();
-                posts.incrementAndGet();
-                operations.putIfAbsent(id, "{\"status\":\"succeeded\",\"psp_ref\":\"" + id + "\"}");
-                if (slow.get()) Thread.sleep(500);
-              } else {
-                id = exchange.getRequestURI().getPath().substring("/payments/".length());
-              }
-              String body = operations.get(id);
-              byte[] bytes =
-                  (body == null ? "{}" : body).getBytes(java.nio.charset.StandardCharsets.UTF_8);
-              exchange.getResponseHeaders().set("Content-Type", "application/json");
-              exchange.sendResponseHeaders(body == null ? 404 : 200, bytes.length);
-              exchange.getResponseBody().write(bytes);
-            } catch (Exception ignored) {
-            } finally {
-              exchange.close();
-            }
-          });
-      psp.start();
-    } catch (Exception e) {
-      throw new ExceptionInInitializerError(e);
-    }
-  }
+	@Autowired
+	PaymentAttemptRepository attempts;
+	@Autowired
+	PaymentProcessorClient processor;
+	@Autowired
+	PaymentService service;
+	@Autowired
+	InvoiceRepository invoices;
+	@Autowired
+	BusinessRepository businesses;
+	@Autowired
+	ApiKeyService apiKeys;
+	@MockitoSpyBean
+	WebhookEvents events;
 
-  @DynamicPropertySource
-  static void database(DynamicPropertyRegistry r) {
-    r.add("spring.datasource.url", postgres::getJdbcUrl);
-    r.add("spring.datasource.username", postgres::getUsername);
-    r.add("spring.datasource.password", postgres::getPassword);
-    r.add("app.psp-url", () -> "http://127.0.0.1:" + psp.getAddress().getPort());
-  }
+	@BeforeEach
+	void prepare() {
+		psp.reset();
+		for (var leftover = attempts.claim(); leftover.isPresent(); leftover = attempts.claim())
+			service.finish(leftover.get(), new PaymentProcessorClient.Result(PaymentStatus.FAILED, null, "test_cleanup"));
+	}
 
-  @LocalServerPort int port;
-  @Autowired JdbcTemplate jdbc;
-  @Autowired PaymentAttemptRepository attempts;
-  @Autowired PaymentProcessorClient processor;
-  @Autowired PaymentService service;
-  private final HttpClient client = HttpClient.newHttpClient();
-  static final String KEY = "demo.local-demo-secret-change-for-real-use";
+	@AfterAll
+	static void stop() {
+		psp.stop();
+	}
 
-  @BeforeEach
-  void reset() {
-    posts.set(0);
-    operations.clear();
-    slow.set(false);
-    jdbc.execute(
-        "TRUNCATE"
-            + " notifications.webhook_deliveries,notifications.events,payments.payment_attempts,billing.invoice_items,billing.invoices,customers.customers"
-            + " CASCADE");
-  }
+	static Map<String, String> token(String token) {
+		return Map.of("card_token", token);
+	}
 
-  @AfterAll
-  static void stop() {
-    psp.stop(0);
-  }
+	HttpResponse<String> pay(String invoice, Object body, String idempotencyKey) throws Exception {
+		return send(KEY, "/invoices/" + invoice + "/pay", body, idempotencyKey);
+	}
 
-  HttpResponse<String> request(String path, String body, String key) throws Exception {
-    var b =
-        HttpRequest.newBuilder(URI.create("http://localhost:" + port + "/api/v1" + path))
-            .header("Authorization", "Bearer " + KEY)
-            .header("Content-Type", "application/json");
-    if (key != null) b.header("Idempotency-Key", key);
-    return client.send(
-        b.POST(HttpRequest.BodyPublishers.ofString(body)).build(),
-        HttpResponse.BodyHandlers.ofString());
-  }
+	String invoiceState(String invoice) throws Exception {
+		return get("/invoices/" + invoice).get("state").asText();
+	}
 
-  String invoice() throws Exception {
-    var customer =
-        request("/customers", "{\"name\":\"Test\",\"email\":\"test@example.com\"}", null);
-    assertEquals(201, customer.statusCode(), customer.body());
-    String id = JSON.readTree(customer.body()).get("id").asText();
-    var response =
-        request(
-            "/invoices",
-            "{\"customer_id\":\""
-                + id
-                + "\",\"due_date\":\"2026-10-20\",\"items\":[{\"description\":\"Work\",\"quantity\":2,\"unit_amount_cents\":2500}]}",
-            null);
-    assertEquals(201, response.statusCode(), response.body());
-    return JSON.readTree(response.body()).get("id").asText();
-  }
+	List<JsonNode> history(String invoice) throws Exception {
+		var list = new ArrayList<JsonNode>();
+		get("/invoices/" + invoice + "/payment-attempts").get("data").forEach(list::add);
+		return list;
+	}
 
-  @Test
-  void concurrentRequestsAcceptOneCharge() throws Exception {
-    String invoice = invoice();
-    var start = new CountDownLatch(1);
-    try (var executor = Executors.newVirtualThreadPerTaskExecutor()) {
-      List<Future<HttpResponse<String>>> calls = new ArrayList<>();
-      for (int i = 0; i < 20; i++)
-        calls.add(
-            executor.submit(
-                () -> {
-                  start.await();
-                  return request(
-                      "/invoices/" + invoice + "/pay",
-                      "{\"card_token\":\"tok_success\"}",
-                      UUID.randomUUID().toString());
-                }));
-      start.countDown();
-      int accepted = 0;
-      for (var f : calls) {
-        int status = f.get(15, TimeUnit.SECONDS).statusCode();
-        assertTrue(status == 202 || status == 409);
-        if (status == 202) accepted++;
-      }
-      assertEquals(1, accepted);
-    }
-    var claim = attempts.claim().orElseThrow();
-    service.finish(claim, processor.execute(claim));
-    assertEquals(1, posts.get());
-    assertEquals(1, operations.size());
-    assertEquals(
-        "paid",
-        jdbc.queryForObject(
-            "SELECT state FROM billing.invoices WHERE id=?",
-            String.class,
-            UUID.fromString(invoice)));
-    assertEquals(
-        1,
-        jdbc.queryForObject(
-            "SELECT count(*) FROM payments.payment_attempts WHERE status='succeeded'",
-            Integer.class));
-  }
+	List<String> eventTypes(String invoice) throws Exception {
+		var types = new ArrayList<String>();
+		get("/events?limit=100").get("data").forEach(e -> {
+			if (e.get("payload").get("data").get("invoice_id").asText().equals(invoice)) types.add(e.get("event_type").asText());
+		});
+		return types;
+	}
 
-  @Test
-  void sameKeyReplaysOriginalResponseWithoutSecondPspCall() throws Exception {
-    String id = invoice(), key = UUID.randomUUID().toString();
-    var first = request("/invoices/" + id + "/pay", "{\"card_token\":\"tok_success\"}", key);
-    assertEquals(202, first.statusCode());
-    var claim = attempts.claim().orElseThrow();
-    service.finish(claim, processor.execute(claim));
-    var retry = request("/invoices/" + id + "/pay", "{\"card_token\":\"tok_success\"}", key);
-    assertEquals(202, retry.statusCode());
-    assertEquals(first.body(), retry.body());
-    assertEquals(1, posts.get());
-    assertTrue(attempts.claim().isEmpty());
-    var changed =
-        request("/invoices/" + id + "/pay", "{\"card_token\":\"tok_card_declined\"}", key);
-    assertEquals(409, changed.statusCode());
-  }
+	@Test
+	void concurrentRequestsAcceptOneCharge() throws Exception {
+		String invoice = invoice();
+		var start = new CountDownLatch(1);
+		try (var executor = Executors.newVirtualThreadPerTaskExecutor()) {
+			List<Future<HttpResponse<String>>> calls = new ArrayList<>();
+			for (int i = 0; i < 20; i++)
+				calls.add(executor.submit(() -> {
+					start.await();
+					return pay(invoice, SUCCESS, key());
+				}));
+			start.countDown();
+			int accepted = 0;
+			for (var call : calls) {
+				int status = call.get(15, TimeUnit.SECONDS).statusCode();
+				assertTrue(status == 202 || status == 409);
+				if (status == 202) accepted++;
+			}
+			assertEquals(1, accepted);
+		}
+		var claim = attempts.claim().orElseThrow();
+		service.finish(claim, processor.execute(claim));
+		assertEquals(1, psp.posts.get());
+		assertEquals(1, psp.operations.size());
+		assertEquals("paid", invoiceState(invoice));
+		var history = history(invoice);
+		assertEquals(1, history.size());
+		assertEquals("succeeded", history.get(0).get("status").asText());
+	}
 
-  @Test
-  void timeoutIsUnknownThenRecoveredWithoutSecondCharge() throws Exception {
-    String id = invoice();
-    slow.set(true);
-    var accepted =
-        request("/invoices/" + id + "/pay", "{\"card_token\":\"tok_timeout\"}", "timeout-case");
-    assertEquals(202, accepted.statusCode());
-    var claim = attempts.claim().orElseThrow();
-    var outcome = processor.execute(claim);
-    assertEquals("unknown", outcome.status());
-    service.finish(claim, outcome);
-    assertEquals(
-        "open",
-        jdbc.queryForObject(
-            "SELECT state FROM billing.invoices WHERE id=?", String.class, UUID.fromString(id)));
-    assertEquals(
-        409,
-        request("/invoices/" + id + "/pay", "{\"card_token\":\"tok_success\"}", "new-key")
-            .statusCode());
-    var recovery = attempts.claim().orElseThrow();
-    service.finish(recovery, processor.execute(recovery));
-    assertEquals(
-        "paid",
-        jdbc.queryForObject(
-            "SELECT state FROM billing.invoices WHERE id=?", String.class, UUID.fromString(id)));
-    assertEquals(1, posts.get());
-  }
+	@Test
+	void sameKeyReplaysOriginalResponseWithoutSecondPspCall() throws Exception {
+		String invoice = invoice(), key = key();
+		var first = pay(invoice, SUCCESS, key);
+		assertEquals(202, first.statusCode());
+		var claim = attempts.claim().orElseThrow();
+		service.finish(claim, processor.execute(claim));
+		var retry = pay(invoice, SUCCESS, key);
+		assertEquals(202, retry.statusCode());
+		assertEquals(first.body(), retry.body());
+		assertEquals(1, psp.posts.get());
+		assertTrue(attempts.claim().isEmpty());
+		var changed = pay(invoice, token("tok_card_declined"), key);
+		assertEquals(409, changed.statusCode());
+		assertEquals("idempotency_key_conflict", errorCode(changed));
+		var newKey = pay(invoice, SUCCESS, key());
+		assertEquals(409, newKey.statusCode());
+		assertEquals("invoice_already_paid", errorCode(newKey));
+		assertEquals(1, psp.posts.get());
+	}
 
-  @Test
-  void lostSuccessBeforePersistenceRecoversSameOperation() throws Exception {
-    String id = invoice();
-    request("/invoices/" + id + "/pay", "{\"card_token\":\"tok_success\"}", "crash-case");
-    var abandoned = attempts.claim().orElseThrow();
-    assertEquals(
-        "succeeded",
-        processor
-            .execute(abandoned)
-            .status()); // Deliberately omit finalization: simulates process loss.
-    jdbc.update("UPDATE payments.payment_attempts SET lease_expires_at=now()-interval '1 second'");
-    var recovery = attempts.claim().orElseThrow();
-    service.finish(recovery, processor.execute(recovery));
-    assertEquals(1, posts.get());
-    assertEquals(
-        "paid",
-        jdbc.queryForObject(
-            "SELECT state FROM billing.invoices WHERE id=?", String.class, UUID.fromString(id)));
-  }
+	@Test
+	void timeoutIsUnknownThenRecoveredWithoutSecondCharge() throws Exception {
+		String invoice = invoice();
+		psp.slow.set(true);
+		assertEquals(202, pay(invoice, token("tok_timeout"), key()).statusCode());
+		var claim = attempts.claim().orElseThrow();
+		var outcome = processor.execute(claim);
+		assertEquals(PaymentStatus.UNKNOWN, outcome.status());
+		service.finish(claim, outcome);
+		assertEquals("open", invoiceState(invoice));
+		assertEquals("unknown", history(invoice).get(0).get("status").asText());
+		assertEquals(409, pay(invoice, SUCCESS, key()).statusCode());
+		var recovery = attempts.claim().orElseThrow();
+		service.finish(recovery, processor.execute(recovery));
+		assertEquals("paid", invoiceState(invoice));
+		assertEquals(1, psp.posts.get());
+	}
 
-  @Test
-  void invoiceAttemptAndEventRollBackTogether() throws Exception {
-    String id = invoice();
-    request("/invoices/" + id + "/pay", "{\"card_token\":\"tok_success\"}", "rollback-case");
-    var claim = attempts.claim().orElseThrow();
-    var outcome = processor.execute(claim);
-    jdbc.execute(
-        "CREATE FUNCTION notifications.reject_paid_test() RETURNS trigger LANGUAGE plpgsql AS $$"
-            + " BEGIN IF NEW.event_type='invoice.paid' THEN RAISE EXCEPTION 'injected event write"
-            + " failure'; END IF; RETURN NEW; END $$");
-    jdbc.execute(
-        "CREATE TRIGGER reject_paid_test BEFORE INSERT ON notifications.events FOR EACH ROW EXECUTE"
-            + " FUNCTION notifications.reject_paid_test()");
-    try {
-      assertThrows(
-          org.springframework.dao.DataAccessException.class, () -> service.finish(claim, outcome));
-      assertEquals(
-          "open",
-          jdbc.queryForObject(
-              "SELECT state FROM billing.invoices WHERE id=?", String.class, UUID.fromString(id)));
-      assertEquals(
-          "pending",
-          jdbc.queryForObject(
-              "SELECT status FROM payments.payment_attempts WHERE id=?",
-              String.class,
-              claim.get("id")));
-      assertEquals(
-          0,
-          jdbc.queryForObject(
-              "SELECT count(*) FROM notifications.events WHERE event_type='invoice.paid'",
-              Integer.class));
-    } finally {
-      jdbc.execute("DROP TRIGGER reject_paid_test ON notifications.events");
-      jdbc.execute("DROP FUNCTION notifications.reject_paid_test()");
-    }
-    service.finish(claim, outcome);
-    assertEquals(
-        "paid",
-        jdbc.queryForObject(
-            "SELECT state FROM billing.invoices WHERE id=?", String.class, UUID.fromString(id)));
-  }
+	@Test
+	void lostSuccessBeforePersistenceRecoversSameOperation() throws Exception {
+		String invoice = invoice();
+		assertEquals(202, pay(invoice, SUCCESS, key()).statusCode());
+		var abandoned = attempts.claim().orElseThrow();
+		assertEquals(PaymentStatus.SUCCEEDED, processor.execute(abandoned).status());
+		var recovery = attempts.claim().orElseThrow();
+		assertEquals(abandoned.getId(), recovery.getId());
+		service.finish(recovery, processor.execute(recovery));
+		assertEquals(1, psp.posts.get());
+		assertEquals("paid", invoiceState(invoice));
+	}
 
-  @Test
-  void sameKeyCannotAcceptTwoDifferentInvoices() throws Exception {
-    String first = invoice(), second = invoice();
-    var start = new CountDownLatch(1);
-    try (var executor = Executors.newVirtualThreadPerTaskExecutor()) {
-      var a =
-          executor.submit(
-              () -> {
-                start.await();
-                return request(
-                    "/invoices/" + first + "/pay",
-                    "{\"card_token\":\"tok_success\"}",
-                    "shared-key");
-              });
-      var b =
-          executor.submit(
-              () -> {
-                start.await();
-                return request(
-                    "/invoices/" + second + "/pay",
-                    "{\"card_token\":\"tok_success\"}",
-                    "shared-key");
-              });
-      start.countDown();
-      var statuses =
-          List.of(
-              a.get(10, TimeUnit.SECONDS).statusCode(), b.get(10, TimeUnit.SECONDS).statusCode());
-      assertEquals(1, statuses.stream().filter(status -> status == 202).count());
-      assertEquals(1, statuses.stream().filter(status -> status == 409).count());
-    }
-    assertEquals(
-        1, jdbc.queryForObject("SELECT count(*) FROM payments.payment_attempts", Integer.class));
-  }
+	@Test
+	void invoiceAttemptAndEventRollBackTogether() throws Exception {
+		String invoice = invoice();
+		var accepted = JSON.readTree(pay(invoice, SUCCESS, key()).body());
+		var claim = attempts.claim().orElseThrow();
+		var outcome = processor.execute(claim);
+		doThrow(new IllegalStateException("Injected event write failure")).when(events).record(any(), eq(EventType.INVOICE_PAID), any(), any(), any());
+		assertThrows(IllegalStateException.class, () -> service.finish(claim, outcome));
+		assertEquals("open", invoiceState(invoice));
+		assertEquals("pending", get("/payment-attempts/" + accepted.get("payment_attempt_id").asText()).get("status").asText());
+		assertFalse(eventTypes(invoice).contains("invoice.paid"));
+		reset(events);
+		service.finish(claim, outcome);
+		assertEquals("paid", invoiceState(invoice));
+		assertTrue(eventTypes(invoice).contains("invoice.paid"));
+	}
+
+	@Test
+	void sameKeyCannotAcceptTwoDifferentInvoices() throws Exception {
+		String first = invoice(), second = invoice(), key = key();
+		var start = new CountDownLatch(1);
+		try (var executor = Executors.newVirtualThreadPerTaskExecutor()) {
+			var a = executor.submit(() -> {
+				start.await();
+				return pay(first, SUCCESS, key);
+			});
+			var b = executor.submit(() -> {
+				start.await();
+				return pay(second, SUCCESS, key);
+			});
+			start.countDown();
+			var statuses = List.of(a.get(10, TimeUnit.SECONDS).statusCode(), b.get(10, TimeUnit.SECONDS).statusCode());
+			assertEquals(1, statuses.stream().filter(status -> status == 202).count());
+			assertEquals(1, statuses.stream().filter(status -> status == 409).count());
+		}
+		assertEquals(1, history(first).size() + history(second).size());
+	}
+
+	@Test
+	void processorErrorStaysUnknownUntilLookupConfirmsFailure() throws Exception {
+		String invoice = invoice();
+		psp.serverError.set(true);
+		assertEquals(202, pay(invoice, token("tok_network_error"), key()).statusCode());
+		var claim = attempts.claim().orElseThrow();
+		var outcome = processor.execute(claim);
+		assertEquals(PaymentStatus.UNKNOWN, outcome.status());
+		service.finish(claim, outcome);
+		assertEquals("open", invoiceState(invoice));
+		assertEquals("payment_in_progress", errorCode(pay(invoice, SUCCESS, key())));
+		var recovery = attempts.claim().orElseThrow();
+		service.finish(recovery, processor.execute(recovery));
+		var attempt = history(invoice).get(0);
+		assertEquals("failed", attempt.get("status").asText());
+		assertEquals("processor_error", attempt.get("failure_code").asText());
+		assertEquals("open", invoiceState(invoice));
+		assertEquals(1, psp.posts.get());
+		assertEquals(List.of("invoice.payment_failed"), eventTypes(invoice).stream().filter(type -> !type.equals("invoice.created")).toList());
+		assertEquals(202, pay(invoice, SUCCESS, key()).statusCode());
+	}
+
+	@Test
+	void staleWorkerCannotOverwriteNewerClaim() throws Exception {
+		String invoice = invoice();
+		assertEquals(202, pay(invoice, SUCCESS, key()).statusCode());
+		var stale = attempts.claim().orElseThrow();
+		var success = processor.execute(stale);
+		var fresh = attempts.claim().orElseThrow();
+		service.finish(stale, success);
+		assertEquals("pending", history(invoice).get(0).get("status").asText());
+		service.finish(fresh, processor.execute(fresh));
+		service.finish(stale, new PaymentProcessorClient.Result(PaymentStatus.FAILED, null, "late_failure"));
+		assertEquals("succeeded", history(invoice).get(0).get("status").asText());
+		assertEquals("paid", invoiceState(invoice));
+		assertEquals(1, psp.posts.get());
+		assertEquals(1, eventTypes(invoice).stream().filter("invoice.paid"::equals).count());
+	}
+
+	@Test
+	void exhaustedRecoveryStaysUnknownAndBlocksNewCharge() throws Exception {
+		String invoice = invoice();
+		assertEquals(202, pay(invoice, token("tok_timeout"), key()).statusCode());
+		for (int round = 0; round <= 6; round++) {
+			var claim = attempts.claim().orElseThrow();
+			service.finish(claim, PaymentProcessorClient.Result.unknown("psp_transport_error"));
+		}
+		assertTrue(attempts.claim().isEmpty());
+		var attempt = history(invoice).get(0);
+		assertEquals("unknown", attempt.get("status").asText());
+		assertTrue(attempt.get("review_required").asBoolean());
+		assertEquals("payment_in_progress", errorCode(pay(invoice, SUCCESS, key())));
+		assertEquals("open", invoiceState(invoice));
+		assertEquals(0, psp.posts.get());
+	}
+
+	@Test
+	void otherTenantCannotSeeOrPayAndRevokedKeyIsRejected() throws Exception {
+		var other = businesses.save(BusinessEntity.builder().name("Other").build());
+		assertEquals(7, other.getId().version());
+		var otherKey = apiKeys.issue(other.getId());
+		String otherApiKey = otherKey.apiKey();
+		String invoice = invoice();
+		assertEquals(404, send(otherApiKey, "/invoices/" + invoice, null, null).statusCode());
+		assertEquals(404, send(otherApiKey, "/invoices/" + invoice + "/pay", SUCCESS, key()).statusCode());
+		assertFalse(send(otherApiKey, "/invoices", null, null).body().contains(invoice));
+		assertTrue(history(invoice).isEmpty());
+		assertTrue(apiKeys.revoke(other.getId(), otherKey.id()));
+		var revoked = send(otherApiKey, "/invoices", null, null);
+		assertEquals(401, revoked.statusCode());
+		assertEquals("unauthorized", errorCode(revoked));
+		assertEquals(401, send("demo.wrong-secret", "/invoices", null, null).statusCode());
+	}
+
+	@Test
+	void securityHeadersCorsMethodsAndUnknownPathsAreLockedDown() throws Exception {
+		var ok = raw("GET", "/api/v1/customers", null, null);
+		assertEquals(200, ok.statusCode());
+		var headers = ok.headers();
+		assertEquals("nosniff", headers.firstValue("X-Content-Type-Options").orElse(""));
+		assertEquals("DENY", headers.firstValue("X-Frame-Options").orElse(""));
+		assertEquals("no-referrer", headers.firstValue("Referrer-Policy").orElse(""));
+		assertEquals("same-origin", headers.firstValue("Cross-Origin-Opener-Policy").orElse(""));
+		assertEquals("same-origin", headers.firstValue("Cross-Origin-Resource-Policy").orElse(""));
+		assertTrue(headers.firstValue("Content-Security-Policy").orElse("").startsWith("default-src 'none'"));
+		assertTrue(headers.firstValue("Permissions-Policy").orElse("").contains("camera=()"));
+		assertTrue(headers.firstValue("Cache-Control").orElse("").contains("no-store"));
+
+		var unauthenticated = anonymous("/api/v1/customers");
+		assertEquals(401, unauthenticated.statusCode());
+		assertEquals("Bearer", unauthenticated.headers().firstValue("WWW-Authenticate").orElse(""));
+		var unknown = anonymous("/");
+		assertEquals(401, unknown.statusCode());
+		assertEquals("unauthorized", errorCode(unknown));
+		assertFalse(unknown.body().contains("timestamp"));
+
+		int customersBefore = get("/customers?limit=100").get("data").size();
+		var crossOrigin = raw("POST", "/api/v1/customers", "https://evil.example", JSON.writeValueAsString(Map.of("name", "x", "email", "x@example.com")));
+		assertEquals(403, crossOrigin.statusCode());
+		assertTrue(crossOrigin.headers().firstValue("Access-Control-Allow-Origin").isEmpty());
+		assertEquals(customersBefore, get("/customers?limit=100").get("data").size());
+
+		for (String method : List.of("PUT", "DELETE", "PATCH", "OPTIONS", "TRACE")) {
+			var rejected = raw(method, "/api/v1/customers", null, null);
+			assertEquals(400, rejected.statusCode(), method);
+			assertEquals("invalid_request", errorCode(rejected), method);
+		}
+		assertEquals(400, raw("POST", "/api/v1/customers", null, "{\"name\":\"a\",\"name\":\"b\",\"email\":\"x@example.com\"}").statusCode());
+		var oversizedKey = client.send(HttpRequest.newBuilder(uri("/api/v1/customers")).header("Authorization", "Bearer demo." + "x".repeat(300)).build(), HttpResponse.BodyHandlers.ofString());
+		assertEquals(401, oversizedKey.statusCode());
+		assertEquals(401, anonymous("/actuator/env").statusCode());
+		var health = anonymous("/actuator/health");
+		assertEquals(200, health.statusCode());
+		assertEquals("{\"status\":\"UP\"}", health.body());
+		var docs = anonymous("/swagger-ui/index.html");
+		assertEquals(200, docs.statusCode());
+		assertTrue(docs.headers().firstValue("Content-Security-Policy").orElse("").contains("frame-ancestors 'none'"));
+	}
+
+	@Test
+	void idsAreTimeOrderedUuidV7AndEnumsKeepLowercaseWireValues() throws Exception {
+		List<String> created = new ArrayList<>();
+		for (int i = 0; i < 3; i++) {
+			String id = customer();
+			assertEquals(7, UUID.fromString(id).version());
+			created.add(id);
+			Thread.sleep(2);
+		}
+		assertEquals(created, created.stream().sorted().toList());
+		var newestFirst = new ArrayList<String>();
+		get("/customers?limit=3").get("data").forEach(c -> newestFirst.add(c.get("id").asText()));
+		assertEquals(created.reversed(), newestFirst);
+
+		String invoice = invoice();
+		assertEquals(7, UUID.fromString(invoice).version());
+		assertEquals("open", invoiceState(invoice));
+		String key = key();
+		var accepted = JSON.readTree(pay(invoice, SUCCESS, key).body());
+		assertEquals("pending", accepted.get("status").asText());
+		assertEquals(7, UUID.fromString(accepted.get("payment_attempt_id").asText()).version());
+		assertEquals(200, request("/invoices?state=open", null).statusCode());
+		assertEquals(400, request("/invoices?state=OPEN", null).statusCode());
+		assertEquals(202, pay(invoice, SUCCESS, key).statusCode());
+	}
+
+	@Test
+	void webhookResultsAreListedPerInvoiceWithTheirEventType() throws Exception {
+		assertEquals(201, request("/webhook-endpoints", Map.of("url", "http://demo-receiver:8090/webhooks")).statusCode());
+		String first = invoice(), second = invoice();
+		var page = get("/webhook-deliveries?invoice_id=" + first).get("data");
+		assertEquals(1, page.size());
+		assertEquals("invoice.created", page.get(0).get("event_type").asText());
+		assertEquals(first, page.get(0).get("invoice_id").asText());
+		assertEquals("pending", page.get(0).get("status").asText());
+		assertNotEquals(second, page.get(0).get("invoice_id").asText());
+	}
+
+	@Test
+	void errorMessagesArePlainAndRevealNoInternals() throws Exception {
+		var invalid = request("/invoices", Map.of("customer_id", customer(), "due_date", "2026-12-01", "items", List.of(Map.of("description", "", "quantity", 0))));
+		assertEquals(422, invalid.statusCode());
+		var error = JSON.readTree(invalid.body()).get("error");
+		assertEquals("validation_failed", error.get("code").asText());
+		assertEquals(Messages.DETAILS_INVALID, error.get("message").asText());
+		var messages = new ArrayList<String>();
+		error.get("details").forEach(d -> messages.add(d.get("message").asText()));
+		assertTrue(messages.containsAll(List.of(Messages.DESCRIPTION_REQUIRED, Messages.QUANTITY_RANGE, Messages.PRICE_REQUIRED)), messages.toString());
+		var noKey = pay(invoice(), SUCCESS, null);
+		assertEquals("idempotency_key_required", errorCode(noKey));
+		messages.add(JSON.readTree(noKey.body()).get("error").get("message").asText());
+		messages.add(JSON.readTree(send("demo.wrong", "/invoices", null, null).body()).get("error").get("message").asText());
+		for (String message : messages) {
+			assertFalse(message.matches(".*[;:()\\[\\]_'\"].*"), message);
+			assertFalse(message.toLowerCase().contains("idempotency") || message.toLowerCase().contains("database") || message.contains("cents"), message);
+		}
+	}
+
+	@Test
+	void databaseRulesHoldWhenSavingThroughRepositories() throws Exception {
+		UUID customer = UUID.fromString(customer());
+		var zeroTotal = assertThrows(DataIntegrityViolationException.class, () -> invoices.save(InvoiceEntity.builder().businessId(DEMO_BUSINESS).customerId(customer).totalAmountCents(0).dueDate(LocalDate.now()).build()));
+		assertTrue(zeroTotal.getMessage().contains("invoices_total_amount_cents_check"), zeroTotal.getMessage());
+
+		UUID invoice = UUID.fromString(invoice());
+		var first = attempts.save(attempt(invoice, 5000));
+		assertEquals(7, first.getId().version());
+		var second = assertThrows(DataIntegrityViolationException.class, () -> attempts.save(attempt(invoice, 5000)));
+		assertTrue(second.getMessage().contains("one_unresolved_attempt"), second.getMessage());
+
+		var zeroAmount = assertThrows(DataIntegrityViolationException.class, () -> attempts.save(attempt(UUID.fromString(invoice()), 0)));
+		assertTrue(zeroAmount.getMessage().contains("payment_attempts_amount_cents_check"), zeroAmount.getMessage());
+	}
+
+	PaymentAttemptEntity attempt(UUID invoice, long amount) {
+		var now = Instant.now();
+		return PaymentAttemptEntity.builder()
+			.businessId(DEMO_BUSINESS)
+			.invoiceId(invoice)
+			.idempotencyKey(key())
+			.requestFingerprint("fingerprint")
+			.mockCardToken("tok_success")
+			.amountCents(amount)
+			.nextAttemptAt(now)
+			.recoveryDeadlineAt(now.plusSeconds(600))
+			.build();
+	}
+
+	@Test
+	void everyResponseCarriesAUuidV7TraceIdThatMatchesTheErrorBody() throws Exception {
+		String trace = request("/customers", null).headers().firstValue("X-Request-Id").orElseThrow();
+		assertEquals(7, UUID.fromString(trace.replaceFirst("(.{8})(.{4})(.{4})(.{4})(.{12})", "$1-$2-$3-$4-$5")).version());
+		var denied = anonymous("/api/v1/customers");
+		String deniedTrace = denied.headers().firstValue("X-Request-Id").orElseThrow();
+		assertEquals(deniedTrace, JSON.readTree(denied.body()).path("error").path("request_id").asText());
+		assertNotEquals(trace, deniedTrace);
+		String foreign = "0af7651916cd43dd8448eb211c80319c";
+		var spoofed = client.send(HttpRequest.newBuilder(uri("/api/v1/customers")).header("Authorization", "Bearer " + KEY).header("traceparent", "00-" + foreign + "-b7ad6b7169203331-01").build(), HttpResponse.BodyHandlers.ofString());
+		assertNotEquals(foreign, spoofed.headers().firstValue("X-Request-Id").orElseThrow());
+	}
+
+	@Test
+	void bodyLimitPageSizeAndCursorsAreCheckedThroughTheApi() throws Exception {
+		var big = request("/customers", Map.of("name", "x".repeat(100_000), "email", "x@example.com"));
+		assertEquals(413, big.statusCode());
+		assertEquals("request_too_large", errorCode(big));
+		for (String limit : List.of("0", "101", "abc")) {
+			var page = request("/customers?limit=" + limit, null);
+			assertEquals(422, page.statusCode(), limit);
+			var detail = JSON.readTree(page.body()).path("error").path("details").get(0);
+			assertEquals("limit", detail.get("field").asText());
+			assertEquals(limit.equals("abc") ? Messages.VALUE_INVALID : Messages.PAGE_SIZE_INVALID, detail.get("message").asText());
+		}
+		var expired = request("/customers?cursor=bm90LWEtY3Vyc29y", null);
+		assertEquals(400, expired.statusCode());
+		assertEquals("invalid_cursor", errorCode(expired));
+		for (int i = 0; i < 4; i++) customer();
+		var first = get("/customers?limit=2");
+		var second = get("/customers?limit=2&cursor=" + first.get("next_cursor").asText());
+		var seen = new ArrayList<String>();
+		first.get("data").forEach(c -> seen.add(c.get("id").asText()));
+		second.get("data").forEach(c -> seen.add(c.get("id").asText()));
+		assertEquals(4, seen.size());
+		assertEquals(seen.stream().sorted(Comparator.reverseOrder()).toList(), seen);
+		assertEquals(400, request("/invoices?cursor=" + first.get("next_cursor").asText(), null).statusCode());
+	}
 }

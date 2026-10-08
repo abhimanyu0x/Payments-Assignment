@@ -1,35 +1,100 @@
 server:
   port: ${PORT:8080}
+  max-http-request-header-size: 8KB
+  error:
+    include-stacktrace: never
+    include-message: never
+    include-binding-errors: never
+    include-exception: false
+    whitelabel:
+      enabled: false
+  tomcat:
+    accesslog:
+      enabled: ${ACCESS_LOG_ENABLED:true}
+      directory: /dev
+      prefix: stdout
+      suffix: ""
+      file-date-format: ""
+      rotate: false
+      buffered: false
+      pattern: "access %{yyyy-MM-dd'T'HH:mm:ss.SSSZ}t trace=%{traceId}r business=%{businessId}r %m %U %s %{ms}Tms"
+    connection-timeout: 10s
+    max-swallow-size: 64KB
+    max-http-form-post-size: 64KB
 spring:
+  application:
+    name: app
+  http:
+    client:
+      factory: jdk
+      connect-timeout: 1s
+      redirects: dont-follow
   datasource:
     url: ${DATABASE_URL:jdbc:postgresql://localhost:5432/dodo}
     username: ${DATABASE_USER:app_user}
     password: ${DATABASE_PASSWORD:local_app_only}
     hikari:
       maximum-pool-size: 10
-  flyway:
+  jpa:
+    open-in-view: false
+    hibernate:
+      ddl-auto: validate
+    properties:
+      hibernate:
+        jdbc:
+          time_zone: UTC
+  liquibase:
     enabled: ${MIGRATE:false}
+    change-log: classpath:db/changelog/db.changelog-master.xml
   jackson:
     property-naming-strategy: SNAKE_CASE
+    parser:
+      strict-duplicate-detection: true
     deserialization:
       fail-on-unknown-properties: true
       accept-float-as-int: false
+springdoc:
+  api-docs:
+    enabled: ${API_DOCS_ENABLED:true}
+  swagger-ui:
+    enabled: ${API_DOCS_ENABLED:true}
+  paths-to-match: /api/**
+  writer-with-order-by-keys: true
+  override-with-generic-response: false
+  default-produces-media-type: application/json
+  show-actuator: false
 management:
+  tracing:
+    sampling:
+      probability: 1.0
+    propagation:
+      consume: []
   endpoints:
+    access:
+      default: none
     web:
       exposure:
         include: health
   endpoint:
     health:
+      access: read-only
       show-details: never
 app:
   psp-url: ${PSP_URL:http://mock-psp:8081}
+  psp-timeout: ${PSP_TIMEOUT:5s}
   webhook-url: ${WEBHOOK_URL:http://demo-receiver:8090/webhooks}
-  encryption-key: ${ENCRYPTION_KEY:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=}
+  webhook-timeout: ${WEBHOOK_TIMEOUT:5s}
+  encryption-key: ${ENCRYPTION_KEY}
   demo-seed: ${DEMO_SEED:true}
+  demo-webhook-secret: ${DEMO_WEBHOOK_SECRET:}
   workers-enabled: ${WORKERS_ENABLED:true}
-  psp-timeout-ms: ${PSP_TIMEOUT_MS:5000}
-  payment-lease-seconds: ${PAYMENT_LEASE_SECONDS:60}
-  payment-recovery-seconds: ${PAYMENT_RECOVERY_SECONDS:600}
-  payment-retry-delays: ${PAYMENT_RETRY_DELAYS:5,10,20,40,60,120}
-  webhook-retry-delays: ${WEBHOOK_RETRY_DELAYS:5,30,120,600,1800}
+  worker-poll-interval: ${WORKER_POLL_INTERVAL:1s}
+  worker-concurrency: ${WORKER_CONCURRENCY:4}
+  payment-lease: ${PAYMENT_LEASE:60s}
+  payment-recovery: ${PAYMENT_RECOVERY:10m}
+  payment-retry-delays: ${PAYMENT_RETRY_DELAYS:5s,10s,20s,40s,60s,120s}
+  webhook-max-attempts: ${WEBHOOK_MAX_ATTEMPTS:6}
+  webhook-lease: ${WEBHOOK_LEASE:30s}
+  webhook-delivery-budget: ${WEBHOOK_DELIVERY_BUDGET:1h}
+  webhook-retry-delays: ${WEBHOOK_RETRY_DELAYS:5s,30s,2m,10m,30m}
+  max-request-size: ${MAX_REQUEST_SIZE:64KB}

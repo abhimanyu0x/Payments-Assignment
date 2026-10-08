@@ -1,49 +1,36 @@
 package dev.dodo.notifications;
 
-import dev.dodo.http.Json;
+import dev.dodo.common.Json;
+import dev.dodo.configuration.AppProperties;
+import java.time.Clock;
 import java.time.Instant;
-import java.util.*;
-import org.springframework.jdbc.core.JdbcTemplate;
+import java.util.UUID;
+import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
+import org.springframework.util.Assert;
 
 @Service
+@RequiredArgsConstructor
 public class WebhookEvents {
-  private final JdbcTemplate jdbc;
-  private final Json json;
+	private final EventRepository events;
+	private final WebhookEndpointRepository endpoints;
+	private final WebhookDeliveryRepository deliveries;
+	private final AppProperties app;
+	private final Json json;
+	private final Clock clock;
 
-  public WebhookEvents(JdbcTemplate jdbc, Json json) {
-    this.jdbc = jdbc;
-    this.json = json;
-  }
+	public void record(UUID business, EventType type, UUID source, UUID invoice, Object data) {
+		Assert.state(TransactionSynchronizationManager.isActualTransactionActive(), "An event must join a business transaction.");
+		if (events.existsByBusinessIdAndEventTypeAndSourceId(business, type, source)) return;
+		var event = events.save(EventEntity.builder().businessId(business).eventType(type).sourceId(source).invoiceId(invoice).data(json.write(data)).build());
+		var now = Instant.now(clock);
+		deliveries.saveAll(endpoints.findByBusinessIdAndActiveTrue(business).stream()
+			.map(endpoint -> WebhookDeliveryEntity.pending(event, endpoint.getId(), now, app.webhookDeliveryBudget()))
+			.toList());
+	}
 
-  public void record(UUID business, String type, UUID source, Map<String, Object> data) {
-    if (!TransactionSynchronizationManager.isActualTransactionActive())
-      throw new IllegalStateException("An event must join a business transaction.");
-    UUID id = UUID.randomUUID();
-    String payload =
-        json.write(
-            Map.of("id", id, "type", type, "created_at", Instant.now().toString(), "data", data));
-    int added =
-        jdbc.update(
-            "INSERT INTO notifications.events(id,business_id,event_type,source_id,payload) VALUES"
-                + " (?,?,?,?,?) ON CONFLICT(business_id,event_type,source_id) DO NOTHING",
-            id,
-            business,
-            type,
-            source,
-            payload);
-    if (added == 0) return;
-    for (var endpoint :
-        jdbc.queryForList(
-            "SELECT id FROM notifications.webhook_endpoints WHERE business_id=? AND active",
-            business))
-      jdbc.update(
-          "INSERT INTO notifications.webhook_deliveries(id,business_id,event_id,endpoint_id) VALUES"
-              + " (?,?,?,?)",
-          UUID.randomUUID(),
-          business,
-          id,
-          endpoint.get("id"));
-  }
+	public String envelope(EventEntity event) {
+		return json.write(WebhookEnvelope.of(event));
+	}
 }

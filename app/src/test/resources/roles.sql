@@ -1,2 +1,0 @@
-CREATE ROLE app_user LOGIN;
-CREATE ROLE psp_user LOGIN;
